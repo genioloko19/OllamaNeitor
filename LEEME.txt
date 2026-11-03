@@ -1,0 +1,40 @@
+OllamaNeitor — alfa v0
+======================
+
+Gestor de modelos de Ollama con interfaz glass, 12 temas y dashboard gamificado.
+
+REQUISITOS
+----------
+- Windows 10/11
+- Node.js 20 o superior
+- Ollama instalado (opcional para el inventario local)
+
+EJECUTAR EN DESARROLLO
+----------------------
+1. Abre una terminal en esta carpeta.
+2. npm install
+3. npm run vendor:copy
+4. npm start
+
+COMPILAR EL .EXE
+----------------
+npm run build:win
+
+Los ejecutables quedan en la carpeta "dist":
+- OllamaNeitor-0.1.0-alpha.0-x64.exe (instalador)
+- OllamaNeitor-0.1.0-alpha.0-portable.exe
+
+DATOS
+-----
+La configuración, logros, chat y registros se guardan en:
+%APPDATA%\Neitor\OllamaNeitor
+
+Para desinstalar por completo, borra esa carpeta y la carpeta de instalación.
+
+NOTAS
+-----
+- La apariencia se puede cambiar desde el Panel de control (tema) y desde
+  el encabezado (Claro / Oscuro / Alto contraste / Auto).
+- La app funciona sin conexión; Ollama solo es necesario para descargar,
+  descargar de memoria, chatear y consultar la API.
+- El .exe no está firmado: Windows puede mostrar un aviso de SmartScreen.

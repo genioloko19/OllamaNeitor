@@ -1,0 +1,80 @@
+{
+  "name": "ollamaneitor",
+  "productName": "OllamaNeitor",
+  "version": "0.1.0-alpha.0",
+  "description": "Gestor de modelos de Ollama con interfaz glass y dashboard gamificado",
+  "main": "electron/main.js",
+  "author": "genioloko19",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/genioloko19/OllamaNeitor.git"
+  },
+  "homepage": "https://github.com/genioloko19/OllamaNeitor#readme",
+  "bugs": {
+    "url": "https://github.com/genioloko19/OllamaNeitor/issues"
+  },
+  "private": true,
+  "scripts": {
+    "start": "npm run themes:build && electron .",
+    "dev": "npm run themes:build && electron . --dev",
+    "dev:cdp": "npm run themes:build && electron . --dev --remote-debugging-port=9222",
+    "postinstall": "node tools/build-themes.mjs && node tools/copy-vendor.mjs && node tools/make-icon.mjs",
+    "themes:build": "node tools/build-themes.mjs",
+    "vendor:copy": "node tools/copy-vendor.mjs",
+    "icon:build": "node tools/make-icon.mjs",
+    "test": "npm run themes:build && vitest run",
+    "test:watch": "vitest",
+    "audit:contrast": "node tools/audit-contrast.mjs",
+    "build:win": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win nsis portable",
+    "build:dir": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.neitor.ollamaneitor",
+    "productName": "OllamaNeitor",
+    "asar": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "src/core/**/*",
+      "src/renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "OllamaNeitor"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
+  },
+  "dependencies": {
+    "tar": "^7.5.22"
+  },
+  "devDependencies": {
+    "@fortawesome/fontawesome-free": "^7.3.1",
+    "animate.css": "^4.1.1",
+    "canvas-confetti": "^1.9.4",
+    "chart.js": "^4.6.1",
+    "dompurify": "^3.4.17",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
+    "marked": "^18.1.3",
+    "sweetalert2": "^11.26.25",
+    "vitest": "^5.1.0"
+  }
+}

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="cyber-neon" data-variant="dark" data-variant-pref="auto" data-pattern="mesh" data-orb-layout="corners" data-orb-count="3" data-orbs="on">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'self' blob:" />
+  <title>OllamaNeitor</title>
+  <script src="themes/themes.boot.js"></script>
+  <script src="js/boot-theme.js"></script>
+  <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css" />
+  <link rel="stylesheet" href="vendor/animate.css/animate.min.css" />
+  <link rel="stylesheet" href="vendor/sweetalert2/sweetalert2.min.css" />
+  <link rel="stylesheet" href="css/tokens.css" />
+  <link rel="stylesheet" href="css/themes.generated.css" />
+  <link rel="stylesheet" href="css/glass.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/components.css" />
+</head>
+<body>
+  <div class="ambient" aria-hidden="true">
+    <span class="orb orb-1"></span>
+    <span class="orb orb-2"></span>
+    <span class="orb orb-3"></span>
+  </div>
+
+  <div class="app-shell">
+    <header class="titlebar glass-panel">
+      <div class="brand drag-region">
+        <span class="brand-mark"><i class="fa-solid fa-bolt"></i></span>
+        <span class="brand-copy">
+          <strong>OllamaNeitor</strong>
+          <small id="brand-version">alfa v0</small>
+        </span>
+      </div>
+
+      <div class="header-progress drag-region">
+        <span class="level-chip"><i class="fa-solid fa-crown"></i> <span id="header-level">LVL 1</span></span>
+        <div class="xp-wrap">
+          <div class="xp-bar"><span id="header-xp-fill"></span></div>
+          <small id="header-xp-label">0 / 100 XP</small>
+        </div>
+        <span class="header-stat" title="RAM/VRAM liberada acumulada">
+          <i class="fa-solid fa-microchip"></i>
+          <span id="header-ram">0 B</span>
+        </span>
+      </div>
+
+      <div class="header-actions">
+        <button id="btn-trophies" class="icon-btn no-drag" title="Sala de trofeos" aria-label="Sala de trofeos">
+          <i class="fa-solid fa-trophy"></i>
+          <span id="trophy-badge" class="badge-dot hidden">0</span>
+        </button>
+
+        <div class="variant-switch no-drag" role="group" aria-label="Modo del tema">
+          <button class="variant-btn" data-variant="light" title="Modo claro" aria-label="Modo claro"><i class="fa-solid fa-sun"></i></button>
+          <button class="variant-btn" data-variant="dark" title="Modo oscuro" aria-label="Modo oscuro"><i class="fa-solid fa-moon"></i></button>
+          <button class="variant-btn" data-variant="contrast" title="Alto contraste" aria-label="Alto contraste"><i class="fa-solid fa-circle-half-stroke"></i></button>
+          <button class="variant-btn" data-variant="auto" title="Seguir el tema de Windows" aria-label="Automático"><i class="fa-solid fa-display"></i></button>
+        </div>
+
+        <button id="btn-settings" class="icon-btn no-drag" title="Panel de control" aria-label="Panel de control">
+          <i class="fa-solid fa-gear"></i>
+        </button>
+
+        <div class="actions-menu no-drag">
+          <button id="btn-actions" class="btn btn-primary btn-sm" aria-haspopup="menu" aria-expanded="false">
+            <i class="fa-solid fa-bars-staggered"></i> Acciones <i class="fa-solid fa-chevron-down"></i>
+          </button>
+          <div id="actions-dropdown" class="dropdown glass-panel hidden" role="menu">
+            <button data-action="export"><i class="fa-solid fa-box-open"></i> Exportar modelos</button>
+            <button data-action="import"><i class="fa-solid fa-file-import"></i> Importar paquete</button>
+            <button data-action="pull"><i class="fa-solid fa-cloud-arrow-down"></i> Descargar modelo</button>
+            <button data-action="refresh"><i class="fa-solid fa-rotate"></i> Refrescar inventario</button>
+            <hr />
+            <button data-action="trophies"><i class="fa-solid fa-trophy"></i> Sala de trofeos</button>
+            <button data-action="logs"><i class="fa-solid fa-terminal"></i> Ver registro</button>
+          </div>
+        </div>
+
+        <div class="window-controls no-drag">
+          <button id="win-min" title="Minimizar" aria-label="Minimizar"><i class="fa-solid fa-minus"></i></button>
+          <button id="win-max" title="Maximizar" aria-label="Maximizar"><i class="fa-regular fa-square"></i></button>
+          <button id="win-close" class="danger" title="Cerrar" aria-label="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <nav class="sidebar glass-panel" aria-label="Navegación principal">
+        <div class="nav-group">
+          <button class="nav-item" data-route="dashboard"><i class="fa-solid fa-chart-pie"></i><span>Dashboard</span></button>
+          <button class="nav-item" data-route="models"><i class="fa-solid fa-layer-group"></i><span>Modelos</span><span class="nav-count" id="nav-models-count">0</span></button>
+          <button class="nav-item" data-route="export"><i class="fa-solid fa-box-open"></i><span>Exportar</span></button>
+          <button class="nav-item" data-route="import"><i class="fa-solid fa-file-import"></i><span>Importar</span></button>
+          <button class="nav-item" data-route="chat"><i class="fa-solid fa-comments"></i><span>Chat</span></button>
+        </div>
+        <div class="nav-sep"></div>
+        <div class="nav-group">
+          <button class="nav-item" data-route="settings"><i class="fa-solid fa-sliders"></i><span>Panel de control</span></button>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="ollama-chip" id="ollama-chip">
+            <span class="status-dot" id="ollama-dot"></span>
+            <div>
+              <strong id="ollama-label">Ollama</strong>
+              <small id="ollama-version">comprobando…</small>
+            </div>
+          </div>
+          <div class="disk-mini">
+            <div class="disk-mini-head"><i class="fa-solid fa-hard-drive"></i><span id="disk-mini-total">—</span></div>
+            <small id="disk-mini-sub">inventario</small>
+          </div>
+        </div>
+      </nav>
+
+      <main id="view-root" class="view" tabindex="-1"></main>
+    </div>
+
+    <footer class="statusbar">
+      <div class="status-left">
+        <span id="status-text"><i class="fa-solid fa-circle-notch fa-spin"></i> Iniciando…</span>
+      </div>
+      <div class="status-right">
+        <button id="status-base" class="status-link" title="Abrir carpeta de modelos"><i class="fa-solid fa-folder-tree"></i> <span id="status-base-label">—</span></button>
+        <button id="status-logs" class="status-link" title="Ver registro"><i class="fa-solid fa-terminal"></i> Registro</button>
+      </div>
+    </footer>
+  </div>
+
+  <aside id="trophy-drawer" class="drawer glass-panel hidden" aria-label="Sala de trofeos">
+    <div class="drawer-head">
+      <h2><i class="fa-solid fa-trophy"></i> Sala de trofeos</h2>
+      <button id="trophy-close" class="icon-btn" aria-label="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="drawer-body" id="trophy-list"></div>
+  </aside>
+  <div id="drawer-backdrop" class="drawer-backdrop hidden"></div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <div id="achievement-root" class="achievement-root" aria-live="polite"></div>
+
+  <div id="boot-splash" class="boot-splash">
+    <div class="boot-logo"><i class="fa-solid fa-bolt"></i></div>
+    <strong>OllamaNeitor</strong>
+    <small>preparando el entorno glass…</small>
+    <div class="boot-bar"><span></span></div>
+  </div>
+
+  <script src="vendor/chartjs/chart.umd.min.js"></script>
+  <script src="vendor/sweetalert2/sweetalert2.all.min.js"></script>
+  <script src="vendor/confetti/confetti.browser.js"></script>
+  <script src="vendor/marked/marked.umd.js"></script>
+  <script src="vendor/dompurify/purify.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
