@@ -26,8 +26,8 @@
     "test": "npm run themes:build && vitest run",
     "test:watch": "vitest",
     "audit:contrast": "node tools/audit-contrast.mjs",
-    "build:win": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win nsis portable",
-    "build:dir": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win --dir"
+    "build:win": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win nsis portable --publish never",
+    "build:dir": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win --dir --publish never"
   },
   "build": {
     "appId": "com.neitor.ollamaneitor",
