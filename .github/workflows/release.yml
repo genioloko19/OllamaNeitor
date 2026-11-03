@@ -37,8 +37,6 @@ jobs:
 
       - name: Build Windows installer and portable
         run: npm run build:win
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate checksums
         shell: pwsh
