@@ -108,6 +108,36 @@ describe('transferencia completa (worker + tar + verificación)', () => {
     }
   }, 40000);
 
+  it('exporta con gzip y permite importar el paquete', async () => {
+    const { base } = makeBase();
+    const destDir = tempDir('neitor-export-gz-');
+    const started = await exporter.startExport({
+      basePath: base,
+      destDir,
+      models: [{ name: 'demo', tag: 'latest' }],
+      template: '{modelo}_{tag}',
+      verify: true,
+      compression: 'gzip'
+    });
+    const exported = await waitForResult(started.jobId);
+    expect(exported.results[0].ok).toBe(true);
+    expect(started.outputs[0].endsWith('.tar.gz')).toBe(true);
+    expect(fs.existsSync(started.outputs[0])).toBe(true);
+
+    const scanned = await importer.scanTar(started.outputs[0]);
+    expect(scanned.valid).toBe(true);
+
+    const destBase = tempDir('neitor-dest-gz-');
+    const importing = await importer.startImport({
+      basePath: destBase,
+      files: [started.outputs[0]],
+      conflict: 'overwrite',
+      verify: true
+    });
+    const imported = await waitForResult(importing.jobId);
+    expect(imported.results[0].ok).toBe(true);
+  }, 40000);
+
   it('detecta un digest corrupto y limpia el staging', async () => {
     const { base } = makeBase({ corrupt: true });
     const destDir = tempDir('neitor-export-bad-');

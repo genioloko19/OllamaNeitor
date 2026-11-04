@@ -120,6 +120,52 @@ async function remove(host, model, timeoutMs = 15000) {
   return json(host, '/api/delete', { method: 'DELETE', body: { model }, timeoutMs });
 }
 
+async function copy(host, source, destination, timeoutMs = 30000) {
+  return json(host, '/api/copy', { method: 'POST', body: { source, destination }, timeoutMs });
+}
+
+async function push({ host, model, onProgress, signal, timeoutMs = 600000 }) {
+  const response = await request(host, '/api/push', {
+    method: 'POST',
+    body: { model, stream: true },
+    timeoutMs,
+    signal
+  });
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.json()).error || ''; } catch { /* ignore */ }
+    fail('E_NO_OLLAMA', detail || `No se pudo subir ${model}`);
+  }
+  let last = null;
+  for await (const event of ndjson(response)) {
+    last = event;
+    if (event.error) fail('E_NO_OLLAMA', event.error);
+    if (onProgress) onProgress(event);
+  }
+  return last;
+}
+
+async function create({ host, model, modelfile, onProgress, signal, timeoutMs = 600000 }) {
+  const response = await request(host, '/api/create', {
+    method: 'POST',
+    body: { model, modelfile, stream: true },
+    timeoutMs,
+    signal
+  });
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.json()).error || ''; } catch { /* ignore */ }
+    fail('E_NO_OLLAMA', detail || `No se pudo crear ${model}`);
+  }
+  let last = null;
+  for await (const event of ndjson(response)) {
+    last = event;
+    if (event.error) fail('E_NO_OLLAMA', event.error);
+    if (onProgress) onProgress(event);
+  }
+  return last;
+}
+
 async function pull({ host, model, onProgress, signal }) {
   const response = await request(host, '/api/pull', {
     method: 'POST',
@@ -186,6 +232,9 @@ module.exports = {
   show,
   unload,
   remove,
+  copy,
+  push,
+  create,
   pull,
   chat,
   status,

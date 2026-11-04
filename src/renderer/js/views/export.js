@@ -67,6 +67,15 @@ export function mount(container) {
           </div>
 
           <div class="field">
+            <label for="exp-compression">Compresión</label>
+            <select id="exp-compression" class="select">
+              <option value="none">Tar sin comprimir (.tar)</option>
+              <option value="gzip">Gzip (.tar.gz)</option>
+            </select>
+            <small>Gzip tarda más pero reduce el tamaño del paquete.</small>
+          </div>
+
+          <div class="field">
             <label>Resumen de selección</label>
             <div class="row-wrap">
               <span class="pill pill-accent" id="exp-count">0 modelos</span>
@@ -182,7 +191,8 @@ export function mount(container) {
       .replace(/\{familia\}/g, sample.family || 'familia')
       .replace(/\{quant\}/g, sample.quantization || 'quant')
       .replace(/\{fecha\}/g, stamp);
-    $('#exp-preview').textContent = `${preview}.tar`;
+    const extension = $('#exp-compression')?.value === 'gzip' ? '.tar.gz' : '.tar';
+    $('#exp-preview').textContent = `${preview}${extension}`;
   }
 
   function resetProgress() {
@@ -327,7 +337,8 @@ export function mount(container) {
         })),
         destDir,
         template: $('#exp-template').value.trim() || '{modelo}_{tag}',
-        verify: $('#exp-verify').checked
+        verify: $('#exp-verify').checked,
+        compression: $('#exp-compression').value
       });
       jobId = result.jobId;
       if (disposed) return;
@@ -396,6 +407,7 @@ export function mount(container) {
   });
 
   $('#exp-template').addEventListener('input', debounce(templatePreview, 120));
+  $('#exp-compression').addEventListener('change', () => templatePreview());
   container.querySelectorAll('[data-token]').forEach((button) => {
     button.addEventListener('click', () => {
       const input = $('#exp-template');

@@ -19,11 +19,16 @@ src/core/
 ├─ importer.js          escaneo de tar, conflictos y worker
 ├─ tar-safety.js        validación compartida de rutas y tipos de entrada
 ├─ jobs.js              cola, concurrencia, progreso, historial y poda
-├─ ollama-api.js        tags, ps, show, pull, chat, unload, delete
+├─ backup.js            backup/restore de config, logros y conversaciones
+├─ ollama-api.js        tags, ps, show, pull, push, create, copy, chat, unload
 ├─ achievements.js      XP, niveles, trofeos y estadísticas
 ├─ conversations.js     historial del chat
 ├─ logger.js            log rotativo y niveles
 └─ errors.js            taxonomía de errores
+
+electron/
+├─ updater.js           autoactualización con electron-updater
+├─ tray               bandeja, menú y notificaciones (en main.js)
 
 src/renderer/
 ├─ index.html           CSP y orden de carga

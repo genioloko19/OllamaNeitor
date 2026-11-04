@@ -67,11 +67,26 @@ Eventos:
 | `ollama:pull` | `model` | `{jobId, model, queued}` |
 | `ollama:cancelPull` | — | cancela descargas activas |
 
+## Backup y actualizaciones
+
+| Canal | Entrada | Salida |
+|---|---|---|
+| `backup:create` | `{file}` | archivo, tamaño, entradas y manifiesto |
+| `backup:list` | — | backups automáticos en `backups/` |
+| `backup:restore` | `{file}` | qué se restauró, backup previo y manifiesto |
+| `backup:openFolder` | — | carpeta de backups |
+| `updater:status` | — | estado, versión actual/disponible y porcentaje |
+| `updater:check` | — | comprueba GitHub Releases |
+| `updater:download` | — | descarga la actualización |
+| `updater:install` | — | instala y reinicia |
+
+Evento: `updater:status`.
+
 ## Chat
 
 | Canal | Entrada | Salida |
 |---|---|---|
-| `chat:send` | `{model, messages}` | `{streamId}` |
+| `chat:send` | `{model, messages}` | `{streamId}` (las imágenes van dentro de cada mensaje) |
 | `chat:cancel` | — | `{cancelled}` |
 | `chat:list` | — | conversaciones |
 | `chat:get` | `id` | conversación completa |

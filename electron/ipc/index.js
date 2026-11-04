@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { ipcMain, dialog, shell, nativeTheme, app } = require('electron');
+const { ipcMain, dialog, shell, nativeTheme, app, Notification } = require('electron');
 const config = require('../../src/core/config');
 const logger = require('../../src/core/logger');
 const jobs = require('../../src/core/jobs');
@@ -12,6 +12,7 @@ const importer = require('../../src/core/importer');
 const api = require('../../src/core/ollama-api');
 const achievements = require('../../src/core/achievements');
 const conversations = require('../../src/core/conversations');
+const backup = require('../../src/core/backup');
 const { serialize } = require('../../src/core/errors');
 const { ensureDir, inspectBasePath, normalize, expandHome } = require('../../src/core/paths');
 const { formatBytes } = require('../../src/core/manifest');
@@ -69,6 +70,71 @@ function register({ getWindow }) {
     return updated;
   });
   handle('config:paths', () => ({ paths: config.paths(), base: currentBase() }));
+
+  /* ---------------- Backup / restore ---------------- */
+
+  handle('backup:create', async (payload) => {
+    const file = payload && payload.file;
+    if (!file) throw new Error('Indica el archivo de backup');
+    const target = normalize(expandHome(file));
+    const result = await backup.createBackup({
+      userDataDir: config.paths().root,
+      file: target,
+      appVersion: app.getVersion()
+    });
+    logger.info('Backup creado', { file: target, size: result.size });
+    return result;
+  });
+
+  handle('backup:list', () => backup.listBackups(config.paths().root));
+
+  handle('backup:restore', async (payload) => {
+    const file = payload && payload.file;
+    if (!file) throw new Error('Indica el archivo de backup');
+    const userDataDir = config.paths().root;
+    const prepared = await backup.prepareRestore({ userDataDir, file: normalize(expandHome(file)) });
+    try {
+      const staging = prepared.stagingDir;
+      const restored = { config: false, achievements: false, conversations: false };
+
+      const configFile = path.join(staging, 'config.json');
+      if (fs.existsSync(configFile)) {
+        const data = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+        config.replace(data);
+        logger.setLevel(config.get().ui.logLevel);
+        jobs.setConcurrency(config.get().transfer.concurrency);
+        restored.config = true;
+      }
+
+      const achievementsFile = path.join(staging, 'achievements.json');
+      if (fs.existsSync(achievementsFile)) {
+        fs.copyFileSync(achievementsFile, path.join(userDataDir, 'achievements.json'));
+        achievements.init(userDataDir);
+        restored.achievements = true;
+      }
+
+      const conversationsDir = path.join(staging, 'conversations');
+      if (fs.existsSync(conversationsDir)) {
+        const target = path.join(userDataDir, 'conversations');
+        fs.rmSync(target, { recursive: true, force: true });
+        fs.cpSync(conversationsDir, target, { recursive: true });
+        conversations.init(target);
+        restored.conversations = true;
+      }
+
+      logger.info('Backup restaurado', { file, ...restored, preRestore: prepared.preRestore });
+      return { ...restored, requiresReload: true, preRestore: prepared.preRestore, manifest: prepared.manifest };
+    } finally {
+      backup.cleanup(prepared.stagingDir);
+    }
+  });
+
+  handle('backup:openFolder', async () => {
+    const dir = path.join(config.paths().root, 'backups');
+    ensureDir(dir);
+    await shell.openPath(dir);
+    return { dir };
+  });
 
   handle('system:theme', () => ({ dark: nativeTheme.shouldUseDarkColors }));
 
@@ -146,6 +212,7 @@ function register({ getWindow }) {
     ensureDir(destDir);
     const template = String(payload.template || cfg.transfer.nameTemplate).slice(0, 120);
     const verify = payload.verify !== false;
+    const compression = payload.compression === 'gzip' ? 'gzip' : 'none';
     config.update({ transfer: { destDir, nameTemplate: template, verify } });
     return exporter.startExport({
       basePath: cfg.ollama.basePath,
@@ -160,7 +227,8 @@ function register({ getWindow }) {
       })),
       template,
       verify,
-      maxGb: cfg.transfer.maxGb
+      maxGb: cfg.transfer.maxGb,
+      compression
     });
   });
 
@@ -281,6 +349,189 @@ function register({ getWindow }) {
     return { cancelled: true };
   });
 
+  handle('ollama:pullMany', (models) => {
+    const cfg = config.get();
+    const list = Array.isArray(models) ? models.map((model) => String(model).trim()).filter(Boolean) : [];
+    if (!list.length) throw new Error('Indica al menos un modelo');
+    let controller = null;
+    const job = jobs.enqueue('pull-many', {
+      meta: { models: list },
+      start: async (current) => {
+        controller = new AbortController();
+        const results = [];
+        try {
+          for (let index = 0; index < list.length; index += 1) {
+            const name = list[index];
+            jobs.updateProgress(current.id, {
+              phase: 'download', model: name, taskIndex: index + 1, taskCount: list.length,
+              percent: Math.round((index / list.length) * 100)
+            });
+            try {
+              await api.pull({
+                host: cfg.ollama.host,
+                model: name,
+                signal: controller.signal,
+                onProgress: (event) => {
+                  const total = Number(event.total) || 0;
+                  const completed = Number(event.completed) || 0;
+                  const within = total ? (completed / total) : 0;
+                  jobs.updateProgress(current.id, {
+                    phase: event.status || 'download',
+                    model: name,
+                    taskIndex: index + 1,
+                    taskCount: list.length,
+                    percent: Math.min(99, Math.round(((index + within) / list.length) * 100))
+                  });
+                }
+              });
+              results.push({ model: name, ok: true });
+            } catch (error) {
+              if (error.code === 'E_CANCELLED') throw error;
+              results.push({ model: name, ok: false, error: { code: error.code, message: error.message } });
+            }
+          }
+          const failed = results.filter((result) => !result.ok);
+          jobs.finish(current.id, failed.length ? 'partial' : 'done', { results });
+        } catch (error) {
+          if (error.code === 'E_CANCELLED') jobs.finish(current.id, 'cancelled');
+          else jobs.fail(current.id, error);
+        }
+      },
+      cancel: () => { if (controller) controller.abort(); }
+    });
+    return { jobId: job.id, count: list.length };
+  });
+
+  handle('ollama:copy', async (payload) => {
+    const cfg = config.get();
+    const source = String((payload && payload.source) || '').trim();
+    const destination = String((payload && payload.destination) || '').trim();
+    if (!source || !destination) throw new Error('Indica origen y destino');
+    if (source === destination) throw new Error('El origen y el destino son iguales');
+    await api.copy(cfg.ollama.host, source, destination, 60000);
+    return { source, destination };
+  });
+
+  handle('ollama:push', (model) => {
+    const cfg = config.get();
+    const name = String(model || '').trim();
+    if (!name) throw new Error('Indica un modelo');
+    let controller = null;
+    const job = jobs.enqueue('push', {
+      meta: { model: name },
+      start: async (current) => {
+        controller = new AbortController();
+        try {
+          await api.push({
+            host: cfg.ollama.host,
+            model: name,
+            signal: controller.signal,
+            onProgress: (event) => {
+              const total = Number(event.total) || 0;
+              const completed = Number(event.completed) || 0;
+              jobs.updateProgress(current.id, {
+                phase: event.status || 'push',
+                percent: total ? Math.min(99, Math.round((completed / total) * 100)) : 0
+              });
+            }
+          });
+          jobs.finish(current.id, 'done', { model: name });
+        } catch (error) {
+          if (error.code === 'E_CANCELLED') jobs.finish(current.id, 'cancelled');
+          else jobs.fail(current.id, error);
+        }
+      },
+      cancel: () => { if (controller) controller.abort(); }
+    });
+    return { jobId: job.id, model: name };
+  });
+
+  handle('ollama:create', (payload) => {
+    const cfg = config.get();
+    const model = String((payload && payload.model) || '').trim();
+    const file = String((payload && payload.file) || '').trim();
+    if (!model || !file) throw new Error('Indica el nombre del modelo y el Modelfile');
+    const target = normalize(expandHome(file));
+    const stat = fs.statSync(target);
+    if (!stat.isFile() || stat.size > 5 * 1024 * 1024) throw new Error('Modelfile inválido o demasiado grande');
+    const modelfile = fs.readFileSync(target, 'utf8');
+    let controller = null;
+    const job = jobs.enqueue('create', {
+      meta: { model },
+      start: async (current) => {
+        controller = new AbortController();
+        try {
+          await api.create({
+            host: cfg.ollama.host,
+            model,
+            modelfile,
+            signal: controller.signal,
+            onProgress: (event) => {
+              jobs.updateProgress(current.id, { phase: event.status || 'create', percent: Number(event.percent) || 0 });
+            }
+          });
+          jobs.finish(current.id, 'done', { model });
+        } catch (error) {
+          if (error.code === 'E_CANCELLED') jobs.finish(current.id, 'cancelled');
+          else jobs.fail(current.id, error);
+        }
+      },
+      cancel: () => { if (controller) controller.abort(); }
+    });
+    return { jobId: job.id, model };
+  });
+
+  handle('ollama:deleteMany', (ids) => {
+    const cfg = config.get();
+    const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+    if (!list.length) throw new Error('Selecciona al menos un modelo');
+    const job = jobs.enqueue('delete', {
+      meta: { models: list },
+      start: async (current) => {
+        const results = [];
+        for (let index = 0; index < list.length; index += 1) {
+          const id = list[index];
+          try {
+            await api.remove(cfg.ollama.host, id, 15000);
+            results.push({ model: id, ok: true });
+          } catch (error) {
+            results.push({ model: id, ok: false, error: { code: error.code, message: error.message } });
+          }
+          jobs.updateProgress(current.id, {
+            phase: 'delete', model: id,
+            percent: Math.round(((index + 1) / list.length) * 100),
+            taskIndex: index + 1, taskCount: list.length
+          });
+        }
+        const failed = results.filter((result) => !result.ok);
+        jobs.finish(current.id, failed.length ? 'partial' : 'done', { results });
+      }
+    });
+    return { jobId: job.id, count: list.length };
+  });
+
+  handle('ollama:unloadMany', async (ids) => {
+    const cfg = config.get();
+    const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+    if (!list.length) throw new Error('Selecciona al menos un modelo');
+    let freed = 0;
+    let unloaded = 0;
+    try {
+      const running = await api.ps(cfg.ollama.host, cfg.ollama.timeoutMs);
+      for (const id of list) {
+        const found = running.find((model) => (model.name || model.model) === id);
+        await api.unload(cfg.ollama.host, id, 30000);
+        unloaded += 1;
+        freed += found ? Number(found.size) || 0 : 0;
+      }
+    } catch (error) {
+      if (!unloaded) throw error;
+    }
+    const registered = achievements.register({ type: 'unload', bytes: freed, models: unloaded });
+    send('achievements:state', registered.state);
+    return { unloaded, freed, freedLabel: formatBytes(freed), state: registered.state };
+  });
+
   /* ---------------- Chat ---------------- */
 
   const chatController = { current: null, streamId: null };
@@ -307,7 +558,13 @@ function register({ getWindow }) {
         const stats = await api.chat({
           host: cfg.ollama.host,
           model,
-          messages: messages.map((message) => ({ role: message.role, content: message.content })),
+          messages: messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+            ...(Array.isArray(message.images) && message.images.length
+              ? { images: message.images.filter((image) => typeof image === 'string').slice(0, 4) }
+              : {})
+          })),
           options: {
             temperature: Number(cfg.chat.temperature),
             num_ctx: Number(cfg.chat.num_ctx),
@@ -365,10 +622,75 @@ function register({ getWindow }) {
     const result = await dialog.showOpenDialog(win, {
       title: 'Seleccionar paquetes de modelos',
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'Paquetes OllamaNeitor', extensions: ['tar'] }]
+      filters: [
+        { name: 'Paquetes OllamaNeitor', extensions: ['tar', 'gz', 'tgz'] },
+        { name: 'Todos los archivos', extensions: ['*'] }
+      ]
     });
     if (result.canceled) return [];
     return result.filePaths;
+  });
+
+  handle('dialog:saveFile', async (options) => {
+    const win = getWindow();
+    const result = await dialog.showSaveDialog(win, {
+      title: (options && options.title) || 'Guardar archivo',
+      defaultPath: options && options.defaultPath ? expandHome(options.defaultPath) : undefined,
+      filters: options && Array.isArray(options.filters) ? options.filters : undefined
+    });
+    if (result.canceled || !result.filePath) return null;
+    return result.filePath;
+  });
+
+  handle('dialog:pickBackup', async () => {
+    const win = getWindow();
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Seleccionar backup de OllamaNeitor',
+      properties: ['openFile'],
+      filters: [{ name: 'Backup OllamaNeitor', extensions: ['gz', 'tgz'] }]
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    return result.filePaths[0];
+  });
+
+  handle('dialog:pickFile', async (options) => {
+    const win = getWindow();
+    const result = await dialog.showOpenDialog(win, {
+      title: (options && options.title) || 'Seleccionar archivo',
+      properties: ['openFile'],
+      filters: options && Array.isArray(options.filters) ? options.filters : undefined
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    return result.filePaths[0];
+  });
+
+  handle('dialog:pickImages', async () => {
+    const win = getWindow();
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Seleccionar imágenes',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Imágenes', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]
+    });
+    if (result.canceled) return [];
+    return result.filePaths;
+  });
+
+  handle('files:readBase64', (paths) => {
+    const list = Array.isArray(paths) ? paths.slice(0, 4) : [];
+    const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+    return list.map((file) => {
+      const target = normalize(expandHome(file));
+      const ext = path.extname(target).toLowerCase();
+      if (!mime[ext]) throw new Error(`Formato de imagen no permitido: ${ext}`);
+      const stat = fs.statSync(target);
+      if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error('La imagen supera 20 MB o no es válida');
+      return {
+        name: path.basename(target),
+        mime: mime[ext],
+        size: stat.size,
+        data: fs.readFileSync(target).toString('base64')
+      };
+    });
   });
 
   const assertExists = (target) => {
@@ -449,6 +771,33 @@ function register({ getWindow }) {
   handle('jobs:cancel', (id) => ({ cancelled: jobs.cancel(id) }));
   handle('jobs:clearHistory', () => jobs.clearHistory());
 
+  handle('jobs:retry', async (id) => {
+    const job = jobs.get(id);
+    if (!job) throw new Error('Trabajo no encontrado');
+    if (['queued', 'running', 'cancelling'].includes(job.status)) throw new Error('El trabajo sigue activo');
+    const cfg = config.get();
+    if (job.type === 'export') {
+      return exporter.startExport({
+        basePath: cfg.ollama.basePath,
+        destDir: job.meta.destDir,
+        models: job.meta.models || [],
+        template: job.meta.template || cfg.transfer.nameTemplate,
+        verify: job.meta.verify !== false,
+        maxGb: cfg.transfer.maxGb,
+        compression: job.meta.compression || 'none'
+      });
+    }
+    if (job.type === 'import') {
+      return importer.startImport({
+        basePath: cfg.ollama.basePath,
+        files: job.meta.files || [],
+        conflict: job.meta.conflict || 'overwrite',
+        verify: job.meta.verify !== false
+      });
+    }
+    throw new Error(`Reintento no soportado para ${job.type}`);
+  });
+
   /* ---------------- Eventos de trabajos y logros ---------------- */
 
   jobs.on('progress', (payload) => {
@@ -456,7 +805,21 @@ function register({ getWindow }) {
     send('transfer:progress', payload);
   });
   jobs.on('changed', (list) => send('jobs:changed', list));
-  jobs.on('finished', (job) => send('jobs:finished', job));
+  jobs.on('finished', (job) => {
+    send('jobs:finished', job);
+    try {
+      const win = getWindow();
+      const focused = win && !win.isDestroyed() && win.isFocused();
+      if (config.get().ui.notifications !== false && !focused && Notification.isSupported()) {
+        const label = job.type === 'export' ? 'Exportación' : job.type === 'import' ? 'Importación' : 'Descarga';
+        const result = job.status === 'done' ? 'completada' : job.status === 'partial' ? 'completada con incidencias' : job.status === 'cancelled' ? 'cancelada' : 'fallida';
+        new Notification({
+          title: `OllamaNeitor · ${label} ${result}`,
+          body: job.error && job.error.message ? job.error.message : (job.meta && job.meta.model ? job.meta.model : 'Abre la aplicación para ver el resultado.')
+        }).show();
+      }
+    } catch { /* ignore */ }
+  });
   jobs.on('error', (payload) => send('transfer:error', payload));
   jobs.on('cancelled', (payload) => send('transfer:cancelled', payload));
 

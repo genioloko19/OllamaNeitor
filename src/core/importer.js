@@ -143,7 +143,10 @@ async function scanFolder(folder, options = {}) {
     fail('E_PATH_INVALID', `Carpeta no válida: ${folder}`);
   }
   const files = fs.readdirSync(folder)
-    .filter((name) => name.toLowerCase().endsWith('.tar'))
+    .filter((name) => {
+      const lower = name.toLowerCase();
+      return lower.endsWith('.tar') || lower.endsWith('.tar.gz') || lower.endsWith('.tgz');
+    })
     .map((name) => path.join(folder, name));
   const packages = [];
   for (const file of files) {

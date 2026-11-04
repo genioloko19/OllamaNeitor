@@ -37,6 +37,9 @@ const DEFAULTS = {
     performanceMode: false,
     logLevel: 'info',
     acrylic: false,
+    closeToTray: false,
+    notifications: true,
+    autoUpdate: true,
     window: null
   }
 };
@@ -149,6 +152,12 @@ class ConfigStore {
 
   update(patch) {
     this.data = sanitize(DEFAULTS, this.migrate(deepMerge(this.data, patch)));
+    this.save();
+    return this.get();
+  }
+
+  replace(data) {
+    this.data = sanitize(DEFAULTS, this.migrate(data || {}));
     this.save();
     return this.get();
   }

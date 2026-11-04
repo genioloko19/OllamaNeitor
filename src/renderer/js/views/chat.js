@@ -21,6 +21,7 @@ export function mount(container) {
   let assistantNode = null;
   let assistantBody = null;
   let pendingFrame = null;
+  let pendingImages = [];
 
   const state = getState();
   const installed = state.models;
@@ -66,7 +67,11 @@ export function mount(container) {
 
           <div id="chat-messages" class="chat-messages"></div>
 
+          <div id="chat-attachments" class="chat-attachments hidden"></div>
           <div class="chat-composer">
+            <button id="chat-attach" class="icon-btn" title="Adjuntar imagen" aria-label="Adjuntar imagen">
+              <i class="fa-solid fa-image"></i>
+            </button>
             <textarea id="chat-input" class="textarea" rows="1" placeholder="Escribe tu mensaje… (Enter envía, Shift+Enter salto de línea)" ${installed.length ? '' : 'disabled'}></textarea>
             <button id="chat-send" class="btn btn-primary" ${installed.length ? '' : 'disabled'}>
               <i class="fa-solid fa-paper-plane"></i> Enviar
@@ -118,11 +123,72 @@ export function mount(container) {
     `;
     const body = node.querySelector('.msg-body');
     if (message.role === 'user') {
-      body.innerHTML = escapeHtml(message.content).replace(/\n/g, '<br>');
+      if (Array.isArray(message.images) && message.images.length) {
+        const gallery = document.createElement('div');
+        gallery.className = 'msg-images';
+        for (const image of message.images.slice(0, 4)) {
+          const img = document.createElement('img');
+          img.src = image.startsWith('data:') ? image : `data:image/png;base64,${image}`;
+          img.alt = 'Imagen adjunta';
+          img.loading = 'lazy';
+          gallery.appendChild(img);
+        }
+        body.appendChild(gallery);
+      }
+      const text = document.createElement('div');
+      text.innerHTML = escapeHtml(message.content).replace(/\n/g, '<br>');
+      body.appendChild(text);
     } else {
       body.innerHTML = message.content ? renderMarkdown(message.content) : '<span class="msg-typing"><span></span><span></span><span></span></span>';
+      enhanceCodeBlocks(body);
     }
     return node;
+  }
+
+  function enhanceCodeBlocks(root) {
+    root.querySelectorAll('pre').forEach((pre) => {
+      if (pre.querySelector('.code-copy')) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'code-copy';
+      button.innerHTML = '<i class="fa-solid fa-copy"></i>';
+      button.title = 'Copiar código';
+      button.addEventListener('click', async () => {
+        const text = pre.querySelector('code')?.innerText || pre.innerText;
+        try {
+          await navigator.clipboard.writeText(text);
+          toast.success('Código copiado');
+        } catch {
+          toast.error('No se pudo copiar');
+        }
+      });
+      pre.appendChild(button);
+    });
+  }
+
+  function renderAttachments() {
+    const box = $('#chat-attachments');
+    if (!box) return;
+    box.classList.toggle('hidden', pendingImages.length === 0);
+    box.innerHTML = '';
+    pendingImages.forEach((image, index) => {
+      const item = document.createElement('div');
+      item.className = 'chat-attachment';
+      const img = document.createElement('img');
+      img.src = `data:${image.mime};base64,${image.data}`;
+      img.alt = image.name;
+      const remove = document.createElement('button');
+      remove.className = 'icon-btn';
+      remove.title = 'Quitar imagen';
+      remove.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      remove.addEventListener('click', () => {
+        pendingImages.splice(index, 1);
+        renderAttachments();
+      });
+      item.appendChild(img);
+      item.appendChild(remove);
+      box.appendChild(item);
+    });
   }
 
   function renderMessages() {
@@ -153,6 +219,7 @@ export function mount(container) {
       pendingFrame = null;
       if (!assistantBody) return;
       assistantBody.innerHTML = renderMarkdown(assistantBuffer);
+      enhanceCodeBlocks(assistantBody);
       scrollBottom();
     });
   }
@@ -200,6 +267,8 @@ export function mount(container) {
     assistantBuffer = '';
     assistantNode = null;
     assistantBody = null;
+    pendingImages = [];
+    renderAttachments();
     $('#chat-state').textContent = 'listo';
     $('#chat-rename').classList.add('hidden');
     renderMessages();
@@ -228,13 +297,20 @@ export function mount(container) {
     const input = $('#chat-input');
     const text = input.value.trim();
     const model = modelSelect.value;
-    if (!text) return;
+    if (!text && !pendingImages.length) return;
     if (!model) {
       toast.warning('Sin modelo', 'Descarga o selecciona un modelo para chatear.');
       return;
     }
 
-    messages.push({ role: 'user', content: text });
+    const outgoingImages = pendingImages.map((image) => image.data);
+    messages.push({
+      role: 'user',
+      content: text,
+      ...(outgoingImages.length ? { images: outgoingImages } : {})
+    });
+    pendingImages = [];
+    renderAttachments();
     input.value = '';
     input.style.height = 'auto';
     renderMessages();
@@ -335,6 +411,21 @@ export function mount(container) {
   /* ---------------- UI ---------------- */
 
   $('#chat-send').addEventListener('click', send);
+  $('#chat-attach').addEventListener('click', async () => {
+    try {
+      const files = await call(bridge.dialogs.pickImages);
+      if (!files || !files.length) return;
+      if (pendingImages.length + files.length > 4) {
+        toast.warning('Demasiadas imágenes', 'Puedes adjuntar hasta 4 imágenes por mensaje.');
+        return;
+      }
+      const images = await call(bridge.files.readBase64, files);
+      pendingImages.push(...images);
+      renderAttachments();
+    } catch (error) {
+      toast.error('No se pudieron adjuntar las imágenes', error.message);
+    }
+  });
   $('#chat-stop').addEventListener('click', async () => {
     try { await call(bridge.chat.cancel); } catch { /* ignore */ }
     finalizeStream({ cancelled: true });

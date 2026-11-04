@@ -1,22 +1,22 @@
-# OllamaNeitor 1.0.0
+# OllamaNeitor 1.1.0
 
-Gestor de modelos de Ollama para Windows con interfaz glass, 12 temas independientes y dashboard gamificado.
+Continuidad, operaciones de modelo y distribución.
 
 ## Novedades principales
 
-- **Importación atómica por modelo**: staging, `.part` + renombrado, backup en sobrescritura y rollback aislado.
-- **Seguridad de paquetes**: rechazo de symlinks, hardlinks, dispositivos, rutas absolutas, `..`, NUL y unidades.
-- **Cola de trabajos**: historial, cancelación, concurrencia configurable y reenganche al navegar.
-- **Mantenimiento real**: limpieza de blobs huérfanos, verificación de integridad y detección de blobs faltantes.
-- **Portable real**: datos en `OllamaNeitorData` junto al ejecutable, con fallback a AppData.
-- **Chat configurable**: system prompt, temperatura, top_p, num_ctx, num_predict, keep_alive e historial.
-- **Exportación robusta**: modelos solo API bloqueados, nombres sin colisiones y fecha coherente.
-- **Aviso al cerrar** con transferencias activas y limpieza de staging al arrancar.
+- **Backup/restore integrado**: configuración, logros y conversaciones en `.tar.gz`, con backup automático previo a cada restauración.
+- **Bandeja del sistema**: menú contextual, cierre a bandeja y notificaciones nativas al terminar trabajos.
+- **Autoactualización** con `electron-updater` desde GitHub Releases, con estados y botones en Ajustes.
+- **Operaciones de modelo**: copiar/renombrar, push, crear desde Modelfile y ver Modelfile.
+- **Acciones masivas**: descargar, eliminar y liberar de RAM varios modelos.
+- **Chat con imágenes**: hasta 4 adjuntos por mensaje, además de system prompt y parámetros de generación.
+- **Compresión**: exportación `.tar` o `.tar.gz`; importación `.tar`, `.tar.gz` y `.tgz`.
+- **Reintento** de exportaciones e importaciones fallidas desde el historial de trabajos.
 
 ## Descargas
 
-- `OllamaNeitor-1.0.0-x64.exe` — instalador para Windows.
-- `OllamaNeitor-1.0.0-portable.exe` — versión portable sin instalación.
+- `OllamaNeitor-1.1.0-x64.exe` — instalador para Windows.
+- `OllamaNeitor-1.1.0-portable.exe` — versión portable sin instalación.
 - `SHA256SUMS.txt` — hashes de verificación.
 
 ## Instalación
@@ -30,14 +30,15 @@ Gestor de modelos de Ollama para Windows con interfaz glass, 12 temas independie
 Descarga `SHA256SUMS.txt` y compara:
 
 ```powershell
-Get-FileHash .\OllamaNeitor-1.0.0-x64.exe -Algorithm SHA256
+Get-FileHash .\OllamaNeitor-1.1.0-x64.exe -Algorithm SHA256
 ```
 
 ## Limitaciones conocidas
 
-- Sin firma de código ni actualizador automático.
-- `asar` desactivado para que los workers puedan cargar `tar` desde disco.
-- Backup/restore integrado, i18n, bandeja del sistema y operaciones avanzadas de modelo quedan para 1.1.
-- Los paquetes `.tar` son el formato propio de OllamaNeitor (manifiestos + blobs).
+- Sin certificado de firma configurado; la autoactualización funciona, pero SmartScreen puede avisar.
+- `asar` desactivado para que los workers carguen `tar` desde disco.
+- La reanudación real de transferencias `.tar` queda para 1.2; se ofrece reintento. Las descargas de Ollama sí se reanudan por digest.
+- `.tar.zst` queda para 1.2.
+- i18n base preparada; la interfaz sigue mayoritariamente en español.
 
 Código fuente: https://github.com/genioloko19/OllamaNeitor

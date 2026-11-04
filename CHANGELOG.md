@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.0
+
+Versión centrada en continuidad, operaciones de modelo y distribución.
+
+### Añadido
+
+- Backup/restore integrado de configuración, logros y conversaciones en `.tar.gz`, con backup previo automático.
+- Bandeja del sistema con menú, cierre a bandeja y notificaciones nativas al terminar trabajos.
+- Autoactualización con `electron-updater` desde GitHub Releases, con estados y botones en Ajustes.
+- Operaciones de modelo: copiar/renombrar, push, crear desde Modelfile y ver Modelfile.
+- Descarga masiva, borrado masivo y descarga de memoria masiva de modelos seleccionados.
+- Chat con imágenes (hasta 4), system prompt, parámetros de generación y botón de copiar código.
+- Exportación `.tar.gz` además de `.tar`, e importación de `.tar`, `.tar.gz` y `.tgz`.
+- Reintento de exportaciones e importaciones fallidas desde el historial de trabajos.
+- Documentación de firma de código y avisos de terceros.
+
+### Corregido
+
+- Cola de trabajos y reenganche estables.
+- Notificaciones y cierre seguro con trabajos activos.
+- Verificación de imágenes adjuntas (tipo, tamaño y límite).
+- Mejoras de accesibilidad en botones y estados.
+
+### Pendiente para 1.2
+
+- Traducción completa de la interfaz (i18n) más allá de la base de textos.
+- Firma de código real (requiere certificado).
+- Compresión `.tar.zst` y reanudación real de transferencias `.tar`.
+- Backup programado y restauración selectiva por conversación.
+
 ## 1.0.0
 
 Versión estable centrada en integridad de datos, trabajos reenganchables y entrega.

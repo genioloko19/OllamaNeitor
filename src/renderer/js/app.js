@@ -356,6 +356,7 @@ function wireGlobalEvents() {
 
   if (bridge) {
     bridge.system.onThemeChange(({ dark }) => syncSystemTheme(dark));
+    bridge.app.onNavigate((route) => go(route));
     bridge.achievements.onState((state) => {
       patch({ achievements: state });
       renderTrophies();

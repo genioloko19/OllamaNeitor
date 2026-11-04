@@ -1,4 +1,4 @@
-# Manual de OllamaNeitor 1.0.0
+# Manual de OllamaNeitor 1.1.0
 
 Guía completa de instalación, uso y resolución de problemas.
 
@@ -64,14 +64,14 @@ El inventario local funciona **sin Ollama en ejecución**, leyendo directamente 
 
 ### Opción A — Instalador
 
-1. Descarga `OllamaNeitor-1.0.0-x64.exe` desde [Releases](https://github.com/genioloko19/OllamaNeitor/releases).
+1. Descarga `OllamaNeitor-1.1.0-x64.exe` desde [Releases](https://github.com/genioloko19/OllamaNeitor/releases).
 2. Ejecuta el instalador.
 3. Elige la carpeta de instalación y confirma.
 4. Abre OllamaNeitor desde el menú Inicio o el acceso directo del escritorio.
 
 ### Opción B — Portable
 
-1. Descarga `OllamaNeitor-1.0.0-portable.exe`.
+1. Descarga `OllamaNeitor-1.1.0-portable.exe`.
 2. Colócalo en la carpeta que quieras.
 3. Ejecútalo directamente, sin instalación.
 
@@ -89,7 +89,7 @@ El ejecutable no está firmado. Si Windows muestra "Windows protegió tu PC":
 Descarga `SHA256SUMS.txt` del mismo release y compara:
 
 ```powershell
-Get-FileHash .\OllamaNeitor-1.0.0-x64.exe -Algorithm SHA256
+Get-FileHash .\OllamaNeitor-1.1.0-x64.exe -Algorithm SHA256
 ```
 
 El resultado debe coincidir con la línea correspondiente de `SHA256SUMS.txt`.
@@ -158,6 +158,17 @@ La columna **Origen** indica:
 
 Los modelos con blobs faltantes muestran una advertencia roja.
 
+### Operaciones de modelo
+
+En la barra superior puedes **Crear** un modelo desde un Modelfile y **Descargar varios** modelos. Desde los detalles de un modelo puedes:
+
+- **Copiar / renombrar** con `ollama copy`.
+- **Push** al registro configurado en Ollama.
+- **Ver Modelfile**.
+- **Verificar integridad** con SHA-256.
+
+La selección múltiple permite **Exportar**, **Eliminar** y **Descargar de RAM** varios modelos. El borrado y las descargas se ejecutan como trabajos con historial.
+
 ### Selección múltiple
 
 Marca las casillas de la primera columna. La barra inferior aparece con:
@@ -197,13 +208,22 @@ El formato `{fecha}` de la previsualización y del archivo final usa la misma ma
 ### Qué contiene el paquete
 
 ```
-paquete.tar
+paquete.tar / paquete.tar.gz
 ├─ manifests/registry.ollama.ai/library/<modelo>/<tag>
 ├─ blobs/sha256-...
 └─ neitor.json
 ```
 
 `neitor.json` guarda metadatos de la exportación: versión, fecha, modelo y digests.
+
+### Compresión
+
+En **Compresión** puedes elegir:
+
+- `.tar` — más rápido, sin compresión.
+- `.tar.gz` — más lento, pero reduce el tamaño del paquete.
+
+La importación acepta `.tar`, `.tar.gz` y `.tgz`.
 
 ### Verificación
 
@@ -233,6 +253,8 @@ Los paquetes con rutas absolutas, `..`, unidades `C:`, enlaces simbólicos, hard
 
 La importación es **atómica por modelo**: cada manifiesto se copia primero a `.part-<uuid>`, se verifica y se renombra. Si un modelo falla, solo se revierte ese modelo; los ya confirmados permanecen. En sobrescritura se guarda un backup temporal del manifiesto anterior y se restaura si algo falla.
 
+Acepta paquetes `.tar`, `.tar.gz` y `.tgz`. Si una importación falla, puedes reencolarla desde **Panel de control → Transferencias → Cola e historial → Reintentar**.
+
 ---
 
 ## Chat
@@ -250,6 +272,10 @@ Funciones disponibles:
 - Nueva conversación.
 - Filtrar conversaciones por título o modelo.
 - Eliminar conversación.
+- Renombrar conversación.
+- Adjuntar hasta 4 imágenes por mensaje (modelos multimodales).
+- System prompt y parámetros de generación persistentes.
+- Botón de copiar en bloques de código.
 - Markdown saneado con DOMPurify.
 - Sugerencias iniciales.
 
@@ -303,10 +329,13 @@ En la versión 1.0 la limpieza de huérfanos es destructiva y está protegida po
 
 - Registro en vivo.
 - Abrir carpeta de logs.
+- **Backup y restauración**: crea un `.tar.gz` con configuración, logros y conversaciones; restaura con backup automático previo.
+- **Actualizaciones**: buscar, descargar e instalar desde GitHub Releases.
 - Reiniciar logros.
 - Restaurar configuración.
 - Abrir `config.json`.
 - Abrir carpeta de datos.
+- Nivel de registro.
 
 ---
 
@@ -517,12 +546,13 @@ Para reportar una vulnerabilidad, abre un issue privado o contacta al mantenedor
 
 ## Limitaciones conocidas
 
-- Sin firma de código ni actualizador automático.
+- Sin certificado de firma configurado; la autoactualización funciona, pero SmartScreen puede avisar.
 - El acrílico nativo depende de Windows 11 y del driver; si falla, se usa el glass CSS.
-- El formato `.tar` es propio de OllamaNeitor (manifiestos + blobs).
+- El formato `.tar`/`.tar.gz` es propio de OllamaNeitor (manifiestos + blobs). `.tar.zst` queda para 1.2.
 - `asar` está desactivado para que los workers carguen `tar` desde disco.
-- Sin i18n: la interfaz está en español.
-- Backup/restore integrado, bandeja del sistema, compresión `.tar.gz`/`.zst`, reanudación, operaciones avanzadas de modelo e imágenes en chat quedan para 1.1.
+- La reanudación real de transferencias `.tar` queda para 1.2; se ofrece reintento. Las descargas de Ollama sí se reanudan por digest.
+- La interfaz sigue mayoritariamente en español; la base de i18n está preparada.
+- Backup programado y restauración selectiva por conversación quedan para 1.2.
 
 ---
 

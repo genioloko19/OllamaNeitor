@@ -70,6 +70,7 @@ class Logger extends EventEmitter {
   }
 
   info(message, meta) { return this.write('info', message, meta); }
+  debug(message, meta) { return this.write('debug', message, meta); }
   warn(message, meta) { return this.write('warn', message, meta); }
   error(message, meta) { return this.write('error', message, meta); }
   success(message, meta) { return this.write('success', message, meta); }

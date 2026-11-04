@@ -3,7 +3,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  app, BrowserWindow, protocol, ipcMain, shell, nativeTheme, Menu, session, dialog
+  app, BrowserWindow, protocol, ipcMain, shell, nativeTheme, Menu, session, dialog,
+  Tray, nativeImage, Notification
 } = require('electron');
 const config = require('../src/core/config');
 const logger = require('../src/core/logger');
@@ -12,6 +13,7 @@ const achievements = require('../src/core/achievements');
 const conversations = require('../src/core/conversations');
 const { ensureDir, resolveUserDataDir } = require('../src/core/paths');
 const { register } = require('./ipc');
+const updater = require('./updater');
 
 app.setName('OllamaNeitor');
 app.setAppUserModelId('com.neitor.ollamaneitor');
@@ -44,6 +46,7 @@ const RENDERER_ROOT = path.resolve(__dirname, '..', 'src', 'renderer');
 const START_URL = 'app://neitor/index.html';
 
 let mainWindow = null;
+let tray = null;
 let isQuitting = false;
 
 protocol.registerSchemesAsPrivileged([
@@ -134,8 +137,7 @@ function loadWindowState() {
   return { width: 1320, height: 880, maximized: false };
 }
 
-function cleanupWorkspaces(cfg) {
-  const temp = config.paths().temp;
+function cleanupWorkspaces(cfg) {  const temp = config.paths().temp;
   try { fs.rmSync(path.join(temp, 'import'), { recursive: true, force: true }); } catch { /* ignore */ }
   try { ensureDir(temp); } catch { /* ignore */ }
   const dest = cfg && cfg.transfer ? cfg.transfer.destDir : '';
@@ -149,6 +151,43 @@ function cleanupWorkspaces(cfg) {
         }
       }
     } catch { /* ignore */ }
+  }
+}
+
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray() {
+  try {
+    const iconPath = path.join(app.getAppPath(), 'build', 'icon.png');
+    let icon = nativeImage.createFromPath(iconPath);
+    if (icon.isEmpty()) icon = nativeImage.createEmpty();
+    tray = new Tray(icon);
+    tray.setToolTip(`OllamaNeitor ${app.getVersion()}`);
+    const menu = Menu.buildFromTemplate([
+      { label: 'Abrir OllamaNeitor', click: showWindow },
+      { type: 'separator' },
+      { label: 'Exportar modelos', click: () => { showWindow(); mainWindow?.webContents.send('app:navigate', 'export'); } },
+      { label: 'Importar paquetes', click: () => { showWindow(); mainWindow?.webContents.send('app:navigate', 'import'); } },
+      { label: 'Panel de control', click: () => { showWindow(); mainWindow?.webContents.send('app:navigate', 'settings'); } },
+      { type: 'separator' },
+      { label: 'Buscar actualizaciones', click: () => { updater.check().catch(() => {}); } },
+      { type: 'separator' },
+      { label: 'Salir', click: () => { isQuitting = true; app.quit(); } }
+    ]);
+    tray.setContextMenu(menu);
+    tray.on('click', showWindow);
+    tray.on('double-click', showWindow);
+    logger.info('Bandeja del sistema iniciada');
+  } catch (error) {
+    logger.warn('No se pudo crear la bandeja del sistema', { error: error.message });
   }
 }
 
@@ -211,6 +250,21 @@ function createWindow() {
     } catch { /* ignore */ }
 
     if (isQuitting) return;
+
+    if (config.get().ui.closeToTray) {
+      event.preventDefault();
+      win.hide();
+      try {
+        if (config.get().ui.notifications && Notification.isSupported()) {
+          new Notification({
+            title: 'OllamaNeitor sigue en segundo plano',
+            body: 'Usa el icono de la bandeja para volver a abrir la aplicación.'
+          }).show();
+        }
+      } catch { /* ignore */ }
+      return;
+    }
+
     if (jobs.hasActive()) {
       const active = jobs.list().filter((job) => ['queued', 'running', 'cancelling'].includes(job.status));
       const labels = active.map((job) => `${job.type === 'export' ? 'Exportación' : job.type === 'import' ? 'Importación' : 'Descarga'} ${job.meta && job.meta.models ? `(${job.meta.models.length} modelos)` : ''}`).slice(0, 4).join('\n');
@@ -311,6 +365,8 @@ async function bootstrap() {
 
   register({ getWindow: () => mainWindow });
   createWindow();
+  createTray();
+  updater.init({ getWindow: () => mainWindow });
 
   nativeTheme.on('updated', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {

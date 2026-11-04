@@ -1028,6 +1028,73 @@ html[data-variant="light"] .msg-body pre {
   padding: 4px 2px;
 }
 
+.msg-images {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.msg-images img {
+  max-height: 160px;
+  max-width: 240px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+}
+
+.chat-attachments {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px 0;
+  flex-wrap: wrap;
+}
+
+.chat-attachment {
+  position: relative;
+}
+
+.chat-attachment img {
+  height: 54px;
+  width: 54px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.chat-attachment .icon-btn {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  font-size: 8px;
+  border-radius: 50%;
+  background: var(--surface-strong);
+}
+
+.msg-body pre {
+  position: relative;
+}
+
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0.55;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--text-muted);
+  border-radius: 6px;
+  width: 26px;
+  height: 24px;
+}
+
+.code-copy:hover {
+  opacity: 1;
+  color: var(--text);
+}
+
 .msg-typing span {
   width: 5px;
   height: 5px;

@@ -10,7 +10,8 @@ function subscribe(channel, callback) {
 
 const api = {
   app: {
-    info: () => ipcRenderer.invoke('app:info')
+    info: () => ipcRenderer.invoke('app:info'),
+    onNavigate: (callback) => subscribe('app:navigate', callback)
   },
   config: {
     get: () => ipcRenderer.invoke('config:get'),
@@ -35,10 +36,24 @@ const api = {
     list: (payload) => ipcRenderer.invoke('jobs:list', payload),
     get: (id) => ipcRenderer.invoke('jobs:get', id),
     cancel: (id) => ipcRenderer.invoke('jobs:cancel', id),
+    retry: (id) => ipcRenderer.invoke('jobs:retry', id),
     clearHistory: () => ipcRenderer.invoke('jobs:clearHistory'),
     onChanged: (callback) => subscribe('jobs:changed', callback),
     onProgress: (callback) => subscribe('jobs:progress', callback),
     onFinished: (callback) => subscribe('jobs:finished', callback)
+  },
+  backup: {
+    create: (payload) => ipcRenderer.invoke('backup:create', payload),
+    list: () => ipcRenderer.invoke('backup:list'),
+    restore: (payload) => ipcRenderer.invoke('backup:restore', payload),
+    openFolder: () => ipcRenderer.invoke('backup:openFolder')
+  },
+  updater: {
+    status: () => ipcRenderer.invoke('updater:status'),
+    check: () => ipcRenderer.invoke('updater:check'),
+    download: () => ipcRenderer.invoke('updater:download'),
+    install: () => ipcRenderer.invoke('updater:install'),
+    onStatus: (callback) => subscribe('updater:status', callback)
   },
   transfer: {
     startExport: (payload) => ipcRenderer.invoke('export:start', payload),
@@ -56,8 +71,14 @@ const api = {
     status: (options) => ipcRenderer.invoke('ollama:status', options || {}),
     ps: () => ipcRenderer.invoke('ollama:ps'),
     unload: (id) => ipcRenderer.invoke('ollama:unload', id),
+    unloadMany: (ids) => ipcRenderer.invoke('ollama:unloadMany', ids),
     pull: (model) => ipcRenderer.invoke('ollama:pull', model),
+    pullMany: (models) => ipcRenderer.invoke('ollama:pullMany', models),
     cancelPull: () => ipcRenderer.invoke('ollama:cancelPull'),
+    copy: (source, destination) => ipcRenderer.invoke('ollama:copy', { source, destination }),
+    push: (model) => ipcRenderer.invoke('ollama:push', model),
+    create: (model, file) => ipcRenderer.invoke('ollama:create', { model, file }),
+    deleteMany: (ids) => ipcRenderer.invoke('ollama:deleteMany', ids),
     onPullProgress: (callback) => subscribe('ollama:pullProgress', callback),
     onPullError: (callback) => subscribe('ollama:pullError', callback)
   },
@@ -80,7 +101,14 @@ const api = {
   },
   dialogs: {
     pickFolder: (options) => ipcRenderer.invoke('dialog:pickFolder', options || {}),
-    pickTarFiles: () => ipcRenderer.invoke('dialog:pickTarFiles')
+    pickTarFiles: () => ipcRenderer.invoke('dialog:pickTarFiles'),
+    saveFile: (options) => ipcRenderer.invoke('dialog:saveFile', options || {}),
+    pickBackup: () => ipcRenderer.invoke('dialog:pickBackup'),
+    pickFile: (options) => ipcRenderer.invoke('dialog:pickFile', options || {}),
+    pickImages: () => ipcRenderer.invoke('dialog:pickImages')
+  },
+  files: {
+    readBase64: (paths) => ipcRenderer.invoke('files:readBase64', paths)
   },
   shell: {
     openPath: (target) => ipcRenderer.invoke('shell:openPath', target),

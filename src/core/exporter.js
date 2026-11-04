@@ -26,11 +26,11 @@ function resolveManifest(base, model) {
   return candidate;
 }
 
-function reserveOutputName(destDir, baseName, used) {
-  let candidate = path.join(destDir, `${baseName}.tar`);
+function reserveOutputName(destDir, baseName, ext, used) {
+  let candidate = path.join(destDir, `${baseName}${ext}`);
   let index = 2;
   while (used.has(candidate.toLowerCase()) || fs.existsSync(candidate)) {
-    candidate = path.join(destDir, `${baseName}-${index}.tar`);
+    candidate = path.join(destDir, `${baseName}-${index}${ext}`);
     index += 1;
   }
   used.add(candidate.toLowerCase());
@@ -41,7 +41,7 @@ function reserveOutputName(destDir, baseName, used) {
  * Construye el plan de exportación. Falla entero si algún modelo seleccionado
  * no es exportable, para no generar un lote parcial silencioso.
  */
-function buildTasks({ basePath, destDir, models, template, verify, maxGb = 50 }) {
+function buildTasks({ basePath, destDir, models, template, verify, maxGb = 50, compression = 'none' }) {
   const base = inspectBasePath(basePath);
   if (!base.hasManifests || !base.hasBlobs) {
     fail('E_PATH_INVALID', 'La ruta base de Ollama no contiene las carpetas manifests y blobs');
@@ -109,7 +109,8 @@ function buildTasks({ basePath, destDir, models, template, verify, maxGb = 50 })
       name: model.name,
       tag: model.tag
     });
-    const outputFinal = reserveOutputName(destDir, baseName, usedNames);
+    const extension = compression === 'gzip' ? '.tar.gz' : '.tar';
+    const outputFinal = reserveOutputName(destDir, baseName, extension, usedNames);
     assertInside(destDir, outputFinal, 'archivo de salida');
 
     tasks.push({
@@ -127,6 +128,7 @@ function buildTasks({ basePath, destDir, models, template, verify, maxGb = 50 })
       stagingDir,
       outputPart: `${outputFinal}.part`,
       outputFinal,
+      compression,
       files
     });
   }
@@ -158,7 +160,7 @@ function buildTasks({ basePath, destDir, models, template, verify, maxGb = 50 })
     });
   }
 
-  return { tasks, totalBytes, verify: Boolean(verify), destDir };
+  return { tasks, totalBytes, verify: Boolean(verify), destDir, compression };
 }
 
 function cleanupStaging(tasks) {
@@ -183,7 +185,8 @@ function spawnExport(job, plan) {
       jobId: job.id,
       tasks: plan.tasks,
       verify: plan.verify,
-      totalBytes: plan.totalBytes
+      totalBytes: plan.totalBytes,
+      compression: plan.compression
     }
   });
 
@@ -232,8 +235,8 @@ function spawnExport(job, plan) {
   return worker;
 }
 
-async function startExport({ basePath, destDir, models, template, verify = true, maxGb = 50 }) {
-  const plan = buildTasks({ basePath, destDir, models, template, verify, maxGb });
+async function startExport({ basePath, destDir, models, template, verify = true, maxGb = 50, compression = 'none' }) {
+  const plan = buildTasks({ basePath, destDir, models, template, verify, maxGb, compression });
   let worker = null;
 
   const job = jobs.enqueue('export', {
@@ -241,6 +244,9 @@ async function startExport({ basePath, destDir, models, template, verify = true,
       totalBytes: plan.totalBytes,
       taskCount: plan.tasks.length,
       destDir,
+      template,
+      verify: plan.verify,
+      compression: plan.compression,
       models: plan.tasks.map((task) => task.model)
     },
     start: (current) => { worker = spawnExport(current, plan); },

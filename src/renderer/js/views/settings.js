@@ -27,6 +27,7 @@ export function mount(container) {
   let tab = 'appearance';
   let offLogs = () => {};
   let offJobs = () => {};
+  let offUpdater = () => {};
   let logEntries = [];
 
   container.innerHTML = `
@@ -284,6 +285,7 @@ export function mount(container) {
               <strong>${escapeHtml(job.type === 'export' ? 'Exportación' : job.type === 'import' ? 'Importación' : 'Descarga')}</strong>
               <span class="pill ${statusClass}">${escapeHtml(job.status)}</span>
               ${active ? `<button class="btn btn-ghost btn-sm" data-job-cancel="${escapeHtml(job.id)}" style="margin-left:auto"><i class="fa-solid fa-stop"></i> Cancelar</button>` : ''}
+              ${!active && ['export', 'import'].includes(job.type) && ['error', 'partial', 'cancelled'].includes(job.status) ? `<button class="btn btn-ghost btn-sm" data-job-retry="${escapeHtml(job.id)}" style="margin-left:auto"><i class="fa-solid fa-rotate-right"></i> Reintentar</button>` : ''}
             </div>
             <p class="truncate">${escapeHtml(jobDescription(job))}</p>
             <div class="progress" style="margin-top:6px"><span data-job-bar="${escapeHtml(job.id)}" style="width:${percent}%"></span></div>
@@ -344,12 +346,24 @@ export function mount(container) {
     });
     $('#jobs-list').addEventListener('click', async (event) => {
       const button = event.target.closest('[data-job-cancel]');
-      if (!button) return;
-      try {
-        await cancelJob(button.dataset.jobCancel);
-        toast.info('Cancelación solicitada');
-      } catch (error) {
-        toast.error('No se pudo cancelar', error.message);
+      if (button) {
+        try {
+          await cancelJob(button.dataset.jobCancel);
+          toast.info('Cancelación solicitada');
+        } catch (error) {
+          toast.error('No se pudo cancelar', error.message);
+        }
+        return;
+      }
+      const retry = event.target.closest('[data-job-retry]');
+      if (retry) {
+        try {
+          await call(bridge.jobs.retry, retry.dataset.jobRetry);
+          toast.info('Trabajo reencolado');
+          await loadJobList();
+        } catch (error) {
+          toast.error('No se pudo reintentar', error.message);
+        }
       }
     });
 
@@ -425,6 +439,31 @@ export function mount(container) {
               Reducir animaciones y orbes
             </label>
             <small>Recomendado en equipos con GPU integrada.</small>
+          </div>
+          <div class="field">
+            <label>Bandeja del sistema</label>
+            <label class="switch">
+              <input type="checkbox" id="cfg-tray" ${ui.closeToTray ? 'checked' : ''} />
+              <span class="track"></span>
+              Cerrar a la bandeja
+            </label>
+            <small>La app sigue en segundo plano y las transferencias continúan.</small>
+          </div>
+          <div class="field">
+            <label>Notificaciones</label>
+            <label class="switch">
+              <input type="checkbox" id="cfg-notifications" ${ui.notifications !== false ? 'checked' : ''} />
+              <span class="track"></span>
+              Avisar al terminar trabajos
+            </label>
+          </div>
+          <div class="field">
+            <label>Actualizaciones automáticas</label>
+            <label class="switch">
+              <input type="checkbox" id="cfg-autoupdate" ${ui.autoUpdate !== false ? 'checked' : ''} />
+              <span class="track"></span>
+              Buscar actualizaciones al iniciar
+            </label>
           </div>
         </div>
       </div>
@@ -507,7 +546,10 @@ export function mount(container) {
           },
           ui: {
             acrylic: $('#cfg-acrylic').checked,
-            performanceMode: $('#cfg-performance').checked
+            performanceMode: $('#cfg-performance').checked,
+            closeToTray: $('#cfg-tray').checked,
+            notifications: $('#cfg-notifications').checked,
+            autoUpdate: $('#cfg-autoupdate').checked
           }
         });
         toast.success('Conexión guardada', 'El inventario se actualizará ahora.');
@@ -753,6 +795,27 @@ export function mount(container) {
       </div>
 
       <div class="settings-section">
+        <h3>Actualizaciones</h3>
+        <p class="hint">Versión actual: <strong>${escapeHtml(info.version)}</strong>. La actualización se descarga desde GitHub Releases.</p>
+        <div class="row-wrap">
+          <button class="btn btn-primary btn-sm" id="updater-check"><i class="fa-solid fa-rotate"></i> Buscar actualizaciones</button>
+          <button class="btn btn-ghost btn-sm hidden" id="updater-download"><i class="fa-solid fa-cloud-arrow-down"></i> Descargar</button>
+          <button class="btn btn-primary btn-sm hidden" id="updater-install"><i class="fa-solid fa-power-off"></i> Instalar y reiniciar</button>
+          <span id="updater-status" class="tiny soft">Sin comprobar.</span>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Backup y restauración</h3>        <p class="hint">Incluye configuración, logros y conversaciones. Los modelos no se incluyen.</p>
+        <div class="row-wrap">
+          <button class="btn btn-primary btn-sm" id="backup-create"><i class="fa-solid fa-box-archive"></i> Crear backup</button>
+          <button class="btn btn-ghost btn-sm" id="backup-restore"><i class="fa-solid fa-upload"></i> Restaurar backup</button>
+          <button class="btn btn-ghost btn-sm" id="backup-folder"><i class="fa-solid fa-folder-open"></i> Abrir carpeta</button>
+        </div>
+        <div id="backup-list" class="hint" style="margin-top:8px"></div>
+      </div>
+
+      <div class="settings-section">
         <h3 style="margin-bottom:10px">Diagnóstico</h3>
         <div class="row-wrap">
           <div class="field" style="max-width:240px">
@@ -874,6 +937,120 @@ export function mount(container) {
         await errorDialog('No se pudo guardar el nivel de registro', error);
       }
     });
+
+    const renderUpdater = (state) => {
+      const label = $('#updater-status');
+      const download = $('#updater-download');
+      const install = $('#updater-install');
+      if (!label) return;
+      const status = state && state.status ? state.status : 'idle';
+      const labels = {
+        disabled: 'Solo disponible en la versión empaquetada.',
+        idle: 'Sin comprobar.',
+        checking: 'Comprobando…',
+        'up-to-date': 'Estás en la última versión.',
+        available: `Actualización disponible: ${state.availableVersion || ''}`,
+        downloading: `Descargando… ${state.percent || 0} %`,
+        downloaded: `Actualización ${state.availableVersion || ''} lista para instalar.`,
+        error: `Error: ${state.error || 'desconocido'}`
+      };
+      label.textContent = labels[status] || status;
+      download.classList.toggle('hidden', status !== 'available');
+      install.classList.toggle('hidden', status !== 'downloaded');
+    };
+
+    $('#updater-check').addEventListener('click', async () => {
+      $('#updater-status').innerHTML = '<span class="spinner"></span> comprobando…';
+      try { renderUpdater(await call(bridge.updater.check)); }
+      catch (error) { toast.error('No se pudo comprobar', error.message); }
+    });
+    $('#updater-download').addEventListener('click', async () => {
+      try { renderUpdater(await call(bridge.updater.download)); }
+      catch (error) { toast.error('No se pudo descargar', error.message); }
+    });
+    $('#updater-install').addEventListener('click', async () => {
+      const ok = await confirm({
+        title: 'Instalar actualización',
+        text: 'La aplicación se cerrará y reiniciará para aplicar la nueva versión.',
+        confirmText: 'Instalar',
+        icon: 'question'
+      });
+      if (!ok) return;
+      try { await call(bridge.updater.install); }
+      catch (error) { toast.error('No se pudo instalar', error.message); }
+    });
+
+    if (bridge && bridge.updater) {
+      const off = bridge.updater.onStatus(renderUpdater);
+      bridge.updater.status().then(renderUpdater).catch(() => {});
+      offUpdater = off;
+    }
+
+    const refreshBackups = async () => {
+      try {
+        const list = await call(bridge.backup.list);
+        const box = $('#backup-list');
+        if (!box) return;
+        if (!list || !list.length) {
+          box.textContent = 'No hay backups automáticos en la carpeta de datos.';
+        } else {
+          box.innerHTML = `Últimos backups: ${list.slice(0, 3).map((item) => `<span class="mono">${escapeHtml(item.name)}</span>`).join(' · ')}`;
+        }
+      } catch { /* ignore */ }
+    };
+
+    $('#backup-create').addEventListener('click', async () => {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      try {
+        const root = getState().paths?.root || '';
+        const file = await call(bridge.dialogs.saveFile, {
+          title: 'Guardar backup de OllamaNeitor',
+          defaultPath: `${root}\\OllamaNeitor-backup-${stamp}.tar.gz`,
+          filters: [{ name: 'Backup OllamaNeitor', extensions: ['tar.gz', 'tgz'] }]
+        });
+        if (!file) return;
+        const result = await call(bridge.backup.create, { file });
+        toast.success('Backup creado', `${result.sizeLabel} · ${file}`);
+        await refreshBackups();
+      } catch (error) {
+        await errorDialog('No se pudo crear el backup', error);
+      }
+    });
+
+    $('#backup-restore').addEventListener('click', async () => {
+      try {
+        const file = await call(bridge.dialogs.pickBackup);
+        if (!file) return;
+        const ok = await confirm({
+          title: 'Restaurar backup',
+          html: 'Se reemplazarán configuración, logros y conversaciones.<br><br>Antes se creará un backup automático del estado actual.',
+          confirmText: 'Restaurar',
+          icon: 'warning',
+          danger: true
+        });
+        if (!ok) return;
+        const result = await call(bridge.backup.restore, { file });
+        await alert({
+          title: 'Backup restaurado',
+          icon: 'success',
+          html: `Se restauraron: ${[
+            result.config ? 'configuración' : '',
+            result.achievements ? 'logros' : '',
+            result.conversations ? 'conversaciones' : ''
+          ].filter(Boolean).join(', ') || 'sin cambios'}.<br><br>Backup previo: <span class="mono">${escapeHtml(result.preRestore)}</span><br><br>La aplicación se recargará.`
+        });
+        window.location.reload();
+      } catch (error) {
+        await errorDialog('No se pudo restaurar el backup', error);
+      }
+    });
+
+    $('#backup-folder').addEventListener('click', async () => {
+      try { await call(bridge.backup.openFolder); }
+      catch (error) { toast.error('No se pudo abrir la carpeta', error.message); }
+    });
+
+    refreshBackups();
   }
 
   /* ================= Render y navegación ================= */
@@ -883,6 +1060,8 @@ export function mount(container) {
     offLogs = () => {};
     offJobs();
     offJobs = () => {};
+    offUpdater();
+    offUpdater = () => {};
     container.querySelectorAll('[data-tab]').forEach((button) => {
       button.classList.toggle('active', button.dataset.tab === tab);
     });
@@ -931,6 +1110,7 @@ export function mount(container) {
     disposed = true;
     offLogs();
     offJobs();
+    offUpdater();
     window.removeEventListener('neitor:theme', onTheme);
     unsubscribe();
   };

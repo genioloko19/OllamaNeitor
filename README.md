@@ -1,15 +1,15 @@
 # OllamaNeitor
 
-**Versión 1.0.0** · Gestor de modelos de Ollama con interfaz glass, 12 temas y dashboard gamificado.
+**Versión 1.1.0** · Gestor de modelos de Ollama con interfaz glass, 12 temas y dashboard gamificado.
 
 Aplicación de escritorio para Windows construida con **Electron**, sin bundler en el renderer y con todas las librerías empaquetadas para funcionar sin conexión.
 
 ## Descargar
 
-La versión **1.0.0** está disponible en [GitHub Releases](https://github.com/genioloko19/OllamaNeitor/releases):
+La versión **1.1.0** está disponible en [GitHub Releases](https://github.com/genioloko19/OllamaNeitor/releases):
 
-- `OllamaNeitor-1.0.0-x64.exe` — instalador para Windows.
-- `OllamaNeitor-1.0.0-portable.exe` — versión portable sin instalación (datos junto al `.exe`).
+- `OllamaNeitor-1.1.0-x64.exe` — instalador para Windows.
+- `OllamaNeitor-1.1.0-portable.exe` — versión portable sin instalación (datos junto al `.exe`).
 
 > El ejecutable no está firmado: Windows puede mostrar un aviso de SmartScreen. Usa "Más información → Ejecutar de todos modos".
 
@@ -27,7 +27,13 @@ La versión **1.0.0** está disponible en [GitHub Releases](https://github.com/g
 - **Cola de trabajos**: exportación, importación y descargas comparten registro, cola, historial, progreso persistente al navegar, cancelación y reenganche desde el Panel de control.
 - **Mantenimiento real**: limpieza de blobs huérfanos, verificación de integridad por modelo, detección de blobs faltantes y borrado sin tocar blobs compartidos.
 - **Dashboard real**: KPIs de nivel, modelos, RAM/VRAM liberada y trofeos; gráficas de familias y tamaños; widget de memoria con `GET /api/ps` y descarga de modelos con `keep_alive: 0`.
-- **Chat**: streaming con `/api/chat`, historial persistente, system prompt, temperatura, top_p, num_ctx, num_predict, keep_alive, Markdown saneado con DOMPurify y renombrado de conversaciones.
+- **Chat**: streaming con `/api/chat`, historial persistente, system prompt, temperatura, top_p, num_ctx, num_predict, keep_alive, adjuntos de imagen, Markdown saneado con DOMPurify, copia de código y renombrado de conversaciones.
+- **Operaciones de modelo**: copiar/renombrar, push, crear desde Modelfile, ver Modelfile, borrado masivo y descarga de memoria masiva.
+- **Backup/restore**: configuración, logros y conversaciones en `.tar.gz`, con backup automático previo a cada restauración.
+- **Bandeja y notificaciones**: cierre a bandeja, menú contextual y avisos nativos al terminar trabajos.
+- **Autoactualización**: `electron-updater` desde GitHub Releases, con estados y control desde Ajustes.
+- **Compresión**: exportación `.tar` o `.tar.gz`; importación `.tar`, `.tar.gz` y `.tgz`.
+- **Reintento**: las exportaciones e importaciones fallidas se pueden reencolar desde el historial.
 - **12 temas independientes** (paleta + geometría + patrón + orbes) y **3 variantes** (Claro, Oscuro, Alto contraste) + **Auto** según Windows.
 - **Portable real**: los datos se guardan en `OllamaNeitorData` junto al ejecutable, con fallback a AppData si la carpeta no es escribible.
 - **Gamificación**: XP, niveles, 9 trofeos, confeti y acorde Web Audio de 4 notas, con conteo real de corrupciones.
@@ -87,7 +93,7 @@ tests/               pruebas unitarias
 
 ### Versión instalada
 
-Todo se guarda en `%APPDATA%\Neitor\OllamaNeitor`:
+La versión instalada guarda todo en:
 
 ```
 config.json          configuración (escritura atómica + backup)
@@ -126,11 +132,11 @@ El script `npm run themes:build` genera `css/themes.generated.css` (36 bloques) 
 - Contención de rutas con `assertInside` en exportación e importación.
 - IPC con validación de payloads y respuestas `{ ok, data | error }`.
 
-## Limitaciones conocidas de 1.0.0
+## Limitaciones conocidas de 1.1.0
 
-- Sin firma de código ni actualizador automático.
-- El acrílico nativo depende de Windows 11 y del driver; si falla, se usa el glass CSS.
-- Los paquetes `.tar` son el formato propio de OllamaNeitor (manifiestos + blobs).
-- `asar` está desactivado para que los workers de transferencia puedan requerir `tar` desde el sistema de archivos; se documenta como decisión de empaquetado.
-- Aún no hay backup/restore integrado de configuración, logros y conversaciones, i18n, bandeja del sistema, firma ni autoactualización.
-- La fase 5 del plan (operaciones avanzadas de modelo, imágenes en chat, compresión `.tar.gz`/`.zst`, descargas masivas y reanudación) queda planificada para 1.1.
+- Sin firma de código ni certificado configurado. La autoactualización funciona, pero Windows puede mostrar SmartScreen.
+- `asar` está desactivado para que los workers de transferencia puedan requerir `tar` desde el sistema de archivos.
+- Los paquetes `.tar` y `.tar.gz` son el formato propio de OllamaNeitor (manifiestos + blobs). `.tar.zst` queda para 1.2.
+- La reanudación real de una exportación/importación `.tar` no está implementada; se ofrece reintento desde el historial. Las descargas de Ollama sí se reanudan por digest.
+- i18n: la base está preparada, pero la interfaz sigue mayoritariamente en español.
+- Backup programado y restauración selectiva por conversación quedan para 1.2.

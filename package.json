@@ -1,7 +1,7 @@
 {
   "name": "ollamaneitor",
   "productName": "OllamaNeitor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Gestor de modelos de Ollama con interfaz glass y dashboard gamificado",
   "main": "electron/main.js",
   "author": "genioloko19",
@@ -48,7 +48,8 @@
       "package.json",
       "README.md",
       "LICENSE",
-      "THIRD_PARTY_NOTICES.md"
+      "THIRD_PARTY_NOTICES.md",
+      "build/icon.png"
     ],
     "win": {
       "target": [
@@ -65,11 +66,19 @@
       "createDesktopShortcut": true,
       "shortcutName": "OllamaNeitor"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "genioloko19",
+        "repo": "OllamaNeitor"
+      }
+    ],
     "portable": {
       "artifactName": "${productName}-${version}-portable.${ext}"
     }
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "tar": "^7.5.22"
   },
   "devDependencies": {
