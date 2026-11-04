@@ -521,7 +521,7 @@ tr:focus-within .row-actions {
   flex-direction: column;
   overflow: hidden;
   animation: modalIn 240ms var(--ease);
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
 }
 
 .modal.modal-wide {

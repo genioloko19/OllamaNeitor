@@ -13,6 +13,10 @@ La versión **0.1.0 Alpha** está disponible en [GitHub Releases](https://github
 
 > El ejecutable no está firmado: Windows puede mostrar un aviso de SmartScreen. Usa "Más información → Ejecutar de todos modos".
 
+[📘 Manual de usuario completo](docs/MANUAL.md)
+
+![Dashboard de OllamaNeitor](docs/images/dashboard-dark.png)
+
 ---
 
 ## Funcionalidad

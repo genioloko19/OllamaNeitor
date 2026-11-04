@@ -387,7 +387,7 @@ html[data-variant="contrast"] .glass-panel {
   transform: translateX(112%);
   transition: transform 320ms var(--ease);
   overflow: hidden;
-  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: blur(28px) saturate(150%);
   -webkit-backdrop-filter: blur(28px) saturate(150%);
 }

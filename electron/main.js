@@ -90,7 +90,7 @@ function handleAppProtocol() {
       const ext = path.extname(target).toLowerCase();
       const headers = {
         'content-type': MIME[ext] || 'application/octet-stream',
-        'cache-control': DEV ? 'no-store' : 'public, max-age=3600',
+        'cache-control': 'no-store',
         'x-content-type-options': 'nosniff'
       };
       if (ext === '.html') headers['content-security-policy'] = CSP;
