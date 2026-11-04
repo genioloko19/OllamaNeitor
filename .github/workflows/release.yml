@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Tag del release'
         required: true
-        default: 'v1.1.0'
+        default: 'v1.1.1'
   push:
     tags:
       - 'v*'
@@ -51,7 +51,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: OllamaNeitor 1.1.0
+          name: OllamaNeitor 1.1.1
           prerelease: false
           overwrite_files: true
           make_latest: true

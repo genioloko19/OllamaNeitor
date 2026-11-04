@@ -1,15 +1,17 @@
 # OllamaNeitor
 
-**Versión 1.1.0** · Gestor de modelos de Ollama con interfaz glass, 12 temas y dashboard gamificado.
+**Versión 1.1.1** · Gestor de modelos de Ollama con interfaz glass, 12 temas y dashboard gamificado.
+
+> **1.1.1** corrige el error multimodal que aparecía en modelos de solo texto al reenviar imágenes del historial. Ahora la capacidad de visión se detecta por modelo y las imágenes se omiten cuando el modelo no las admite.
 
 Aplicación de escritorio para Windows construida con **Electron**, sin bundler en el renderer y con todas las librerías empaquetadas para funcionar sin conexión.
 
 ## Descargar
 
-La versión **1.1.0** está disponible en [GitHub Releases](https://github.com/genioloko19/OllamaNeitor/releases):
+La versión **1.1.1** está disponible en [GitHub Releases](https://github.com/genioloko19/OllamaNeitor/releases):
 
-- `OllamaNeitor-1.1.0-x64.exe` — instalador para Windows.
-- `OllamaNeitor-1.1.0-portable.exe` — versión portable sin instalación (datos junto al `.exe`).
+- `OllamaNeitor-1.1.1-x64.exe` — instalador para Windows.
+- `OllamaNeitor-1.1.1-portable.exe` — versión portable sin instalación (datos junto al `.exe`).
 
 > El ejecutable no está firmado: Windows puede mostrar un aviso de SmartScreen. Usa "Más información → Ejecutar de todos modos".
 
@@ -132,7 +134,7 @@ El script `npm run themes:build` genera `css/themes.generated.css` (36 bloques) 
 - Contención de rutas con `assertInside` en exportación e importación.
 - IPC con validación de payloads y respuestas `{ ok, data | error }`.
 
-## Limitaciones conocidas de 1.1.0
+## Limitaciones conocidas de 1.1.1
 
 - Sin firma de código ni certificado configurado. La autoactualización funciona, pero Windows puede mostrar SmartScreen.
 - `asar` está desactivado para que los workers de transferencia puedan requerir `tar` desde el sistema de archivos.

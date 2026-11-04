@@ -1,4 +1,4 @@
-OllamaNeitor — 1.1.0
+OllamaNeitor — 1.1.1
 ===================
 
 Gestor de modelos de Ollama con interfaz glass, 12 temas y dashboard gamificado.
@@ -21,8 +21,8 @@ COMPILAR EL .EXE
 npm run build:win
 
 Los ejecutables quedan en la carpeta "dist":
-- OllamaNeitor-1.1.0-x64.exe (instalador)
-- OllamaNeitor-1.1.0-portable.exe
+- OllamaNeitor-1.1.1-x64.exe (instalador)
+- OllamaNeitor-1.1.1-portable.exe
 
 DATOS
 -----

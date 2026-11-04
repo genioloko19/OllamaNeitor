@@ -85,6 +85,7 @@ const api = {
   chat: {
     send: (payload) => ipcRenderer.invoke('chat:send', payload),
     cancel: () => ipcRenderer.invoke('chat:cancel'),
+    capabilities: (model) => ipcRenderer.invoke('chat:capabilities', model),
     onChunk: (callback) => subscribe('chat:chunk', callback),
     onDone: (callback) => subscribe('chat:done', callback),
     onError: (callback) => subscribe('chat:error', callback),

@@ -1,4 +1,4 @@
-# Manual de OllamaNeitor 1.1.0
+# Manual de OllamaNeitor 1.1.1
 
 Guía completa de instalación, uso y resolución de problemas.
 
@@ -64,14 +64,14 @@ El inventario local funciona **sin Ollama en ejecución**, leyendo directamente 
 
 ### Opción A — Instalador
 
-1. Descarga `OllamaNeitor-1.1.0-x64.exe` desde [Releases](https://github.com/genioloko19/OllamaNeitor/releases).
+1. Descarga `OllamaNeitor-1.1.1-x64.exe` desde [Releases](https://github.com/genioloko19/OllamaNeitor/releases).
 2. Ejecuta el instalador.
 3. Elige la carpeta de instalación y confirma.
 4. Abre OllamaNeitor desde el menú Inicio o el acceso directo del escritorio.
 
 ### Opción B — Portable
 
-1. Descarga `OllamaNeitor-1.1.0-portable.exe`.
+1. Descarga `OllamaNeitor-1.1.1-portable.exe`.
 2. Colócalo en la carpeta que quieras.
 3. Ejecútalo directamente, sin instalación.
 
@@ -89,7 +89,7 @@ El ejecutable no está firmado. Si Windows muestra "Windows protegió tu PC":
 Descarga `SHA256SUMS.txt` del mismo release y compara:
 
 ```powershell
-Get-FileHash .\OllamaNeitor-1.1.0-x64.exe -Algorithm SHA256
+Get-FileHash .\OllamaNeitor-1.1.1-x64.exe -Algorithm SHA256
 ```
 
 El resultado debe coincidir con la línea correspondiente de `SHA256SUMS.txt`.
@@ -273,7 +273,8 @@ Funciones disponibles:
 - Filtrar conversaciones por título o modelo.
 - Eliminar conversación.
 - Renombrar conversación.
-- Adjuntar hasta 4 imágenes por mensaje (modelos multimodales).
+- Adjuntar hasta 4 imágenes por mensaje (solo modelos multimodales).
+- Detección automática de visión por modelo; los modelos de texto omiten las imágenes del historial.
 - System prompt y parámetros de generación persistentes.
 - Botón de copiar en bloques de código.
 - Markdown saneado con DOMPurify.

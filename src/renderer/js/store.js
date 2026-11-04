@@ -4,7 +4,7 @@ const state = {
   ready: false,
   route: 'dashboard',
   platform: 'win32',
-  version: '1.1.0',
+  version: '1.1.1',
   paths: {},
   base: {},
   config: null,

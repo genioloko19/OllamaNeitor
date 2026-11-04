@@ -535,6 +535,28 @@ function register({ getWindow }) {
   /* ---------------- Chat ---------------- */
 
   const chatController = { current: null, streamId: null };
+  const capabilityCache = new Map();
+
+  handle('chat:capabilities', async (model) => {
+    const cfg = config.get();
+    const name = String(model || '').trim();
+    if (!name) throw new Error('Modelo inválido');
+    const key = `${cfg.ollama.host}|${name}`;
+    const cached = capabilityCache.get(key);
+    if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.value;
+    try {
+      const info = await api.show(cfg.ollama.host, name, 8000);
+      const capabilities = Array.isArray(info.capabilities) ? info.capabilities : [];
+      const families = (info.details && Array.isArray(info.details.families)) ? info.details.families : [];
+      const vision = capabilities.includes('vision')
+        || families.some((family) => ['clip', 'mllama', 'llava'].includes(String(family).toLowerCase()));
+      const value = { model: name, vision, capabilities, families };
+      capabilityCache.set(key, { at: Date.now(), value });
+      return value;
+    } catch (error) {
+      return { model: name, vision: false, capabilities: [], families: [], error: error.message };
+    }
+  });
 
   handle('chat:send', (payload, event) => {
     if (chatController.current) throw new Error('Ya hay una respuesta en curso');

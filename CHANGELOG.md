@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.1
+
+Parche de chat multimodal.
+
+### Corregido
+
+- Los modelos de solo texto ya no reciben el campo `images` del historial, evitando el error `Multimodal data provided, but model does not support multimodal requests`.
+- Detección de capacidad `vision` por modelo mediante `/api/show` (incluye `clip`, `mllama` y `llava`).
+- El botón de adjuntar imagen se deshabilita en modelos sin visión y se avisa al usuario.
+- Al cambiar a un modelo sin visión se eliminan los adjuntos pendientes.
+- Los errores de Ollama con formato `{error:{code,message}}` muestran el mensaje legible en lugar del JSON crudo.
+- La respuesta final del asistente se renderiza siempre al terminar el streaming.
+- La conversación conserva las imágenes para modelos multimodales y las omite solo para modelos de texto.
+
 ## 1.1.0
 
 Versión centrada en continuidad, operaciones de modelo y distribución.

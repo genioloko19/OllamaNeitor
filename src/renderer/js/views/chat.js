@@ -22,6 +22,8 @@ export function mount(container) {
   let assistantBody = null;
   let pendingFrame = null;
   let pendingImages = [];
+  let modelVision = false;
+  let capabilitySeq = 0;
 
   const state = getState();
   const installed = state.models;
@@ -60,6 +62,7 @@ export function mount(container) {
                 : '<option value="">Sin modelos instalados</option>'}
             </select>
             <span class="grow"></span>
+            <span class="pill" id="chat-vision" title="Capacidad del modelo">comprobando…</span>
             <span class="pill" id="chat-state">listo</span>
             <button class="btn btn-sm btn-ghost hidden" id="chat-rename"><i class="fa-solid fa-pen"></i> Renombrar</button>
             <button class="btn btn-sm btn-danger hidden" id="chat-stop"><i class="fa-solid fa-stop"></i> Detener</button>
@@ -69,7 +72,7 @@ export function mount(container) {
 
           <div id="chat-attachments" class="chat-attachments hidden"></div>
           <div class="chat-composer">
-            <button id="chat-attach" class="icon-btn" title="Adjuntar imagen" aria-label="Adjuntar imagen">
+            <button id="chat-attach" class="icon-btn" title="Adjuntar imagen" aria-label="Adjuntar imagen" disabled>
               <i class="fa-solid fa-image"></i>
             </button>
             <textarea id="chat-input" class="textarea" rows="1" placeholder="Escribe tu mensaje… (Enter envía, Shift+Enter salto de línea)" ${installed.length ? '' : 'disabled'}></textarea>
@@ -191,6 +194,49 @@ export function mount(container) {
     });
   }
 
+  async function refreshCapabilities() {
+    const model = modelSelect.value;
+    const seq = ++capabilitySeq;
+    const pill = $('#chat-vision');
+    const attach = $('#chat-attach');
+    if (pill) {
+      pill.textContent = 'comprobando…';
+      pill.className = 'pill';
+    }
+    if (!model) {
+      modelVision = false;
+      if (attach) attach.disabled = true;
+      if (pill) pill.textContent = 'sin modelo';
+      return;
+    }
+    try {
+      const result = await call(bridge.chat.capabilities, model);
+      if (seq !== capabilitySeq) return;
+      modelVision = Boolean(result && result.vision);
+      if (pill) {
+        pill.textContent = modelVision ? 'visión' : 'solo texto';
+        pill.className = `pill ${modelVision ? 'pill-success' : ''}`;
+        pill.title = modelVision
+          ? 'El modelo acepta imágenes'
+          : 'El modelo no acepta imágenes; se omitirán del historial al enviar';
+      }
+      if (attach) {
+        attach.disabled = !modelVision;
+        attach.title = modelVision ? 'Adjuntar imagen' : 'Este modelo no admite imágenes';
+      }
+      if (!modelVision && pendingImages.length) {
+        pendingImages = [];
+        renderAttachments();
+        toast.warning('Modelo sin visión', 'Se han quitado las imágenes adjuntas.');
+      }
+    } catch {
+      if (seq !== capabilitySeq) return;
+      modelVision = false;
+      if (pill) { pill.textContent = 'sin datos'; pill.className = 'pill'; }
+      if (attach) attach.disabled = true;
+    }
+  }
+
   function renderMessages() {
     const box = $('#chat-messages');
     box.innerHTML = '';
@@ -302,6 +348,10 @@ export function mount(container) {
       toast.warning('Sin modelo', 'Descarga o selecciona un modelo para chatear.');
       return;
     }
+    if (pendingImages.length && !modelVision) {
+      toast.warning('Modelo sin visión', 'Este modelo no acepta imágenes. Quita los adjuntos o elige un modelo multimodal.');
+      return;
+    }
 
     const outgoingImages = pendingImages.map((image) => image.data);
     messages.push({
@@ -337,7 +387,14 @@ export function mount(container) {
           const maxHistory = Math.max(2, Number(chatConfig.maxHistory) || 40);
           const recent = messages
             .filter((message) => message.role === 'user' || message.content)
-            .slice(-maxHistory);
+            .slice(-maxHistory)
+            .map((message) => {
+              const item = { role: message.role, content: message.content };
+              if (modelVision && Array.isArray(message.images) && message.images.length) {
+                item.images = message.images;
+              }
+              return item;
+            });
           if (chatConfig.systemPrompt && chatConfig.systemPrompt.trim()) {
             return [{ role: 'system', content: chatConfig.systemPrompt.trim() }, ...recent];
           }
@@ -368,6 +425,9 @@ export function mount(container) {
       if (!assistantBuffer) {
         last.content = cancelled ? '(cancelado)' : '(sin respuesta)';
         if (assistantBody) assistantBody.innerHTML = `<span class="soft">${escapeHtml(last.content)}</span>`;
+      } else if (assistantBody) {
+        assistantBody.innerHTML = renderMarkdown(assistantBuffer);
+        enhanceCodeBlocks(assistantBody);
       }
     }
     const evalCount = stats && stats.eval_count ? ` · ${stats.eval_count} tokens` : '';
@@ -445,6 +505,7 @@ export function mount(container) {
 
   modelSelect.addEventListener('change', () => {
     window.localStorage.setItem(MODEL_KEY, modelSelect.value);
+    refreshCapabilities();
   });
 
   $('#chat-new').addEventListener('click', newConversation);
@@ -514,6 +575,7 @@ export function mount(container) {
 
   renderMessages();
   loadConversations();
+  refreshCapabilities();
   input.focus();
 
   return () => {

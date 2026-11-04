@@ -45,13 +45,20 @@ async function request(host, endpoint, options = {}) {
   }
 }
 
+function extractError(data) {
+  if (!data) return '';
+  if (typeof data.error === 'string') return data.error;
+  if (data.error && typeof data.error.message === 'string') return data.error.message;
+  if (typeof data.message === 'string') return data.message;
+  return '';
+}
+
 async function json(host, endpoint, options = {}) {
   const response = await request(host, endpoint, options);
   if (!response.ok) {
     let detail = '';
     try {
-      const data = await response.json();
-      detail = data.error || '';
+      detail = extractError(await response.json());
     } catch { /* ignore */ }
     fail('E_NO_OLLAMA', detail || `Ollama devolvió HTTP ${response.status}`);
   }
@@ -133,13 +140,13 @@ async function push({ host, model, onProgress, signal, timeoutMs = 600000 }) {
   });
   if (!response.ok) {
     let detail = '';
-    try { detail = (await response.json()).error || ''; } catch { /* ignore */ }
+    try { detail = extractError(await response.json()); } catch { /* ignore */ }
     fail('E_NO_OLLAMA', detail || `No se pudo subir ${model}`);
   }
   let last = null;
   for await (const event of ndjson(response)) {
     last = event;
-    if (event.error) fail('E_NO_OLLAMA', event.error);
+    if (event.error) fail('E_NO_OLLAMA', extractError(event));
     if (onProgress) onProgress(event);
   }
   return last;
@@ -154,13 +161,13 @@ async function create({ host, model, modelfile, onProgress, signal, timeoutMs = 
   });
   if (!response.ok) {
     let detail = '';
-    try { detail = (await response.json()).error || ''; } catch { /* ignore */ }
+    try { detail = extractError(await response.json()); } catch { /* ignore */ }
     fail('E_NO_OLLAMA', detail || `No se pudo crear ${model}`);
   }
   let last = null;
   for await (const event of ndjson(response)) {
     last = event;
-    if (event.error) fail('E_NO_OLLAMA', event.error);
+    if (event.error) fail('E_NO_OLLAMA', extractError(event));
     if (onProgress) onProgress(event);
   }
   return last;
@@ -175,13 +182,13 @@ async function pull({ host, model, onProgress, signal }) {
   });
   if (!response.ok) {
     let detail = '';
-    try { detail = (await response.json()).error || ''; } catch { /* ignore */ }
+    try { detail = extractError(await response.json()); } catch { /* ignore */ }
     fail('E_NO_OLLAMA', detail || `No se pudo descargar ${model}`);
   }
   let last = null;
   for await (const event of ndjson(response)) {
     last = event;
-    if (event.error) fail('E_NO_OLLAMA', event.error);
+    if (event.error) fail('E_NO_OLLAMA', extractError(event));
     if (onProgress) onProgress(event);
   }
   return last;
@@ -196,12 +203,12 @@ async function chat({ host, model, messages, options, keepAlive, onChunk, signal
   });
   if (!response.ok) {
     let detail = '';
-    try { detail = (await response.json()).error || ''; } catch { /* ignore */ }
+    try { detail = extractError(await response.json()); } catch { /* ignore */ }
     fail('E_NO_OLLAMA', detail || `El modelo ${model} no respondió`);
   }
   let final = null;
   for await (const event of ndjson(response)) {
-    if (event.error) fail('E_NO_OLLAMA', event.error);
+    if (event.error) fail('E_NO_OLLAMA', extractError(event));
     const delta = event.message && event.message.content ? event.message.content : '';
     if (delta && onChunk) onChunk(delta);
     if (event.done) final = event;
