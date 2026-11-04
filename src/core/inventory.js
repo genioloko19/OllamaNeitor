@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const api = require('./ollama-api');
 const logger = require('./logger');
 const {
@@ -55,16 +56,22 @@ function modelFromManifest(base, manifestsRoot, manifestFile) {
   let blobCount = 0;
   const missing = [];
   for (const digest of digests) {
-    const blobFile = path.join(base.blobs, digestToBlobName(digest));
     try {
+      const blobFile = path.join(base.blobs, digestToBlobName(digest));
       const info = fs.statSync(blobFile);
+      if (!info.isFile()) throw new Error('no es archivo');
       sizeBytes += info.size;
       blobCount += 1;
     } catch {
       missing.push(digest);
     }
   }
-  const described = describeFromConfigBlob(base.blobs, manifest);
+  let described = {};
+  try {
+    described = describeFromConfigBlob(base.blobs, manifest);
+  } catch {
+    described = {};
+  }
   const model = {
     id: `${identity.name}:${identity.tag}`,
     name: identity.name,
@@ -77,6 +84,8 @@ function modelFromManifest(base, manifestsRoot, manifestFile) {
     manifestBytes: stat.size,
     modifiedAt: stat.mtime.toISOString(),
     source: 'disk',
+    exportable: missing.length === 0,
+    exportBlockReason: missing.length ? `faltan ${missing.length} blob(s)` : '',
     ...described
   };
   cache.set(manifestFile, { mtimeMs: stat.mtimeMs, size: stat.size, model });
@@ -124,6 +133,8 @@ function mergeApi(local, apiModels) {
       existing.quantization = existing.quantization || details.quantization_level || '';
       existing.format = existing.format || details.format || '';
       existing.modifiedAt = item.modified_at || existing.modifiedAt;
+      existing.exportable = Boolean(existing.manifestPath) && existing.missingBlobs === 0;
+      existing.exportBlockReason = existing.exportable ? '' : 'sin manifiesto local';
     } else {
       byId.set(id, {
         id,
@@ -137,6 +148,8 @@ function mergeApi(local, apiModels) {
         missingBlobs: 0,
         modifiedAt: item.modified_at || null,
         source: 'api',
+        exportable: false,
+        exportBlockReason: 'solo API (sin manifiesto local)',
         family: details.family || families[0] || '',
         families,
         parameterSize: details.parameter_size || '',
@@ -173,10 +186,15 @@ async function listModels({ basePath, host, timeoutMs = 2500, includeApi = true 
     }
   }
 
-  const models = apiModels ? mergeApi(local, apiModels) : local;
+  const models = apiModels ? mergeApi(local, apiModels) : local.map((model) => ({
+    ...model,
+    exportable: Boolean(model.manifestPath) && model.missingBlobs === 0,
+    exportBlockReason: model.missingBlobs ? `faltan ${model.missingBlobs} blob(s)` : ''
+  }));
   const totalBytes = models.reduce((sum, model) => sum + (Number(model.sizeBytes) || 0), 0);
   return {
     models,
+    base: inspectBasePath(basePath),
     ollama: {
       online: apiModels !== null,
       version,
@@ -187,7 +205,8 @@ async function listModels({ basePath, host, timeoutMs = 2500, includeApi = true 
       count: models.length,
       localCount: local.length,
       diskBytes: local.reduce((sum, model) => sum + (Number(model.sizeBytes) || 0), 0),
-      totalBytes
+      totalBytes,
+      exportableCount: models.filter((model) => model.exportable).length
     }
   };
 }
@@ -195,47 +214,196 @@ async function listModels({ basePath, host, timeoutMs = 2500, includeApi = true 
 function blobStats(basePath) {
   const base = inspectBasePath(basePath);
   if (!base.hasBlobs) {
-    return { ok: false, totalBytes: 0, blobCount: 0, orphanCount: 0, orphanBytes: 0, orphans: [], referenced: 0 };
+    return {
+      ok: false,
+      totalBytes: 0,
+      totalLabel: '0 B',
+      blobCount: 0,
+      referencedCount: 0,
+      referencedBytes: 0,
+      referencedLabel: '0 B',
+      missingCount: 0,
+      missingBytes: 0,
+      missingLabel: '0 B',
+      orphanCount: 0,
+      orphanBytes: 0,
+      orphanLabel: '0 B',
+      orphans: [],
+      missing: [],
+      manifestErrors: 0,
+      manifests: 0
+    };
   }
-  const referenced = new Set();
+
+  const referenced = new Map();
   let manifests = 0;
+  let manifestErrors = 0;
   if (base.hasManifests) {
     for (const file of walkManifests(base.manifests)) {
       try {
         const manifest = readManifest(file);
-        for (const digest of digestsOf(manifest)) referenced.add(digestToBlobName(digest));
+        for (const entry of [
+          manifest.config,
+          ...(Array.isArray(manifest.layers) ? manifest.layers : [])
+        ]) {
+          if (!entry || !entry.digest) continue;
+          referenced.set(entry.digest, Number(entry.size) || 0);
+        }
         manifests += 1;
-      } catch { /* ignore */ }
+      } catch {
+        manifestErrors += 1;
+      }
     }
   }
+
+  const blobs = new Map();
   let entries = [];
   try {
     entries = fs.readdirSync(base.blobs, { withFileTypes: true }).filter((entry) => entry.isFile());
   } catch { /* ignore */ }
-  let totalBytes = 0;
-  let orphanBytes = 0;
-  const orphans = [];
   for (const entry of entries) {
-    const full = path.join(base.blobs, entry.name);
-    let size = 0;
-    try { size = fs.statSync(full).size; } catch { continue; }
+    try {
+      const info = fs.statSync(path.join(base.blobs, entry.name));
+      blobs.set(entry.name, info.size);
+    } catch { /* ignore */ }
+  }
+
+  const orphans = [];
+  const orphanNames = [];
+  let totalBytes = 0;
+  let orphanCount = 0;
+  let orphanBytes = 0;
+  for (const [name, size] of blobs) {
     totalBytes += size;
-    if (!referenced.has(entry.name)) {
+    const digest = name.replace(/^sha256-/, 'sha256:');
+    if (!referenced.has(digest)) {
+      orphanCount += 1;
       orphanBytes += size;
-      if (orphans.length < 500) orphans.push({ name: entry.name, size, sizeLabel: formatBytes(size) });
+      orphanNames.push(name);
+      if (orphans.length < 500) orphans.push({ name, size, sizeLabel: formatBytes(size) });
     }
   }
+
+  let referencedCount = 0;
+  let referencedBytes = 0;
+  let missingCount = 0;
+  let missingBytes = 0;
+  const missing = [];
+  for (const [digest, size] of referenced) {
+    let blobName;
+    try {
+      blobName = digestToBlobName(digest);
+    } catch {
+      missingCount += 1;
+      continue;
+    }
+    if (blobs.has(blobName)) {
+      referencedCount += 1;
+      referencedBytes += blobs.get(blobName);
+    } else {
+      missingCount += 1;
+      missingBytes += size;
+      if (missing.length < 500) missing.push({ digest, blobName, size, sizeLabel: formatBytes(size) });
+    }
+  }
+
   return {
     ok: true,
     totalBytes,
     totalLabel: formatBytes(totalBytes),
-    blobCount: entries.length,
-    referenced: referenced.size,
-    orphanCount: entries.length - referenced.size,
+    blobCount: blobs.size,
+    referencedCount,
+    referencedBytes,
+    referencedLabel: formatBytes(referencedBytes),
+    missingCount,
+    missingBytes,
+    missingLabel: formatBytes(missingBytes),
+    orphanCount,
     orphanBytes,
     orphanLabel: formatBytes(orphanBytes),
     orphans: orphans.sort((a, b) => b.size - a.size),
+    orphanNames,
+    missing,
+    manifestErrors,
     manifests
+  };
+}
+
+async function deleteOrphans({ basePath, names = null, dryRun = false } = {}) {
+  const base = inspectBasePath(basePath);
+  if (!base.hasBlobs) return { deleted: 0, freedBytes: 0, dryRun, candidates: [] };
+  const stats = blobStats(basePath);
+  const candidates = (stats.orphanNames || [])
+    .filter((name) => !names || names.includes(name))
+    .map((name) => {
+      try {
+        return { name, size: fs.statSync(path.join(base.blobs, name)).size };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  if (dryRun) {
+    return { deleted: 0, freedBytes: candidates.reduce((sum, orphan) => sum + orphan.size, 0), dryRun: true, candidates };
+  }
+  let deleted = 0;
+  let freedBytes = 0;
+  for (const orphan of candidates) {
+    try {
+      fs.rmSync(path.join(base.blobs, orphan.name), { force: true });
+      deleted += 1;
+      freedBytes += orphan.size;
+    } catch { /* ignore */ }
+  }
+  return { deleted, freedBytes, freedLabel: formatBytes(freedBytes), dryRun: false };
+}
+
+function hashFile(file) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(file, { highWaterMark: 1024 * 1024 });
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(`sha256:${hash.digest('hex')}`));
+    stream.on('error', reject);
+  });
+}
+
+async function verifyModel({ basePath, id }) {
+  const local = scanLocal(basePath);
+  const model = local.find((item) => item.id === id);
+  if (!model || !model.manifestPath) {
+    return { ok: false, id, error: 'No se encontró el manifiesto local', missing: [], corrupt: [] };
+  }
+  let manifest;
+  try {
+    manifest = readManifest(model.manifestPath);
+  } catch (error) {
+    return { ok: false, id, error: error.message, missing: [], corrupt: [] };
+  }
+  const base = inspectBasePath(basePath);
+  const missing = [];
+  const corrupt = [];
+  let checked = 0;
+  let bytes = 0;
+  for (const digest of digestsOf(manifest)) {
+    const blobFile = path.join(base.blobs, digestToBlobName(digest));
+    if (!fs.existsSync(blobFile)) {
+      missing.push(digest);
+      continue;
+    }
+    const actual = await hashFile(blobFile);
+    checked += 1;
+    bytes += fs.statSync(blobFile).size;
+    if (actual !== digest) corrupt.push({ digest, actual });
+  }
+  return {
+    ok: missing.length === 0 && corrupt.length === 0,
+    id,
+    checked,
+    bytes,
+    bytesLabel: formatBytes(bytes),
+    missing,
+    corrupt
   };
 }
 
@@ -312,6 +480,8 @@ module.exports = {
   mergeApi,
   listModels,
   blobStats,
+  deleteOrphans,
+  verifyModel,
   deleteModel,
   clearCache
 };

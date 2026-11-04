@@ -5,7 +5,7 @@ import { bridge, call } from '../ipc.js';
 import { refreshModels, refreshStatus, refreshAchievements } from '../services.js';
 import { fmtBytes, fmtDate, escapeHtml, debounce } from '../lib/format.js';
 import { toast } from '../lib/toast.js';
-import { confirm, errorDialog } from '../lib/swal.js';
+import { confirm, errorDialog, alert } from '../lib/swal.js';
 import { openModal } from '../lib/modal.js';
 
 function matches(model, query) {
@@ -24,6 +24,7 @@ export function mount(container) {
   let family = '';
   let sort = 'name';
   let pulling = null;
+  let pullJobId = null;
   let lastModels = null;
 
   container.innerHTML = `
@@ -150,16 +151,21 @@ export function mount(container) {
       const missing = model.missingBlobs > 0
         ? `<span class="pill pill-danger" title="Faltan blobs"><i class="fa-solid fa-triangle-exclamation"></i> ${model.missingBlobs}</span>`
         : '';
+      const notExportable = !model.exportable
+        ? `<span class="pill pill-warning" title="${escapeHtml(model.exportBlockReason || 'no exportable')}">no exportable</span>`
+        : '';
       return `
         <tr data-id="${escapeHtml(model.id)}" class="${selected ? 'selected' : ''}">
           <td class="check">
-            <input type="checkbox" class="check" data-select="${escapeHtml(model.id)}" ${selected ? 'checked' : ''} aria-label="Seleccionar ${escapeHtml(model.id)}" />
+            <input type="checkbox" class="check" data-select="${escapeHtml(model.id)}" ${selected ? 'checked' : ''}
+              ${model.exportable ? '' : 'disabled'} aria-label="Seleccionar ${escapeHtml(model.id)}" />
           </td>
           <td>
             <div class="row" style="gap:6px">
               <strong>${escapeHtml(model.name)}</strong>
               <span class="pill">${escapeHtml(model.tag)}</span>
               ${missing}
+              ${notExportable}
             </div>
           </td>
           <td>${model.family ? `<span class="pill pill-accent">${escapeHtml(model.family)}</span>` : '<span class="soft">—</span>'}</td>
@@ -233,17 +239,44 @@ export function mount(container) {
       <pre class="log-view" style="height:190px">${escapeHtml(JSON.stringify(remote, null, 2).slice(0, 6000))}</pre>
     ` : `<div class="alert" style="margin-top:14px"><i class="fa-solid fa-plug-circle-xmark"></i> Ollama no está disponible; se muestra solo la información del manifiesto local.</div>`;
 
-    openModal({
+    const dialog = openModal({
       title: escapeHtml(id),
       icon: 'fa-circle-info',
       wide: true,
       body: `<div class="detail-grid">${detailsHtml}</div>${remoteHtml}`,
-      footer: `<button class="btn btn-ghost" data-close-modal>Volver</button>`
+      footer: `
+        <button class="btn btn-ghost" data-verify><i class="fa-solid fa-shield-halved"></i> Verificar integridad</button>
+        <button class="btn btn-ghost" data-close-modal>Volver</button>
+      `
     });
-    const modal = document.querySelector('.modal-backdrop:last-child');
-    if (modal) {
-      modal.querySelector('[data-close-modal]')?.addEventListener('click', () => modal.remove());
-    }
+
+    dialog.element.querySelector('[data-close-modal]').addEventListener('click', dialog.close);
+    dialog.element.querySelector('[data-verify]').addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const original = button.innerHTML;
+      button.disabled = true;
+      button.innerHTML = '<span class="spinner"></span> Verificando…';
+      try {
+        const result = await call(bridge.models.verify, id);
+        await alert({
+          title: result.ok ? 'Integridad correcta' : 'Problemas de integridad',
+          icon: result.ok ? 'success' : 'warning',
+          html: result.error
+            ? `<p>${escapeHtml(result.error)}</p>`
+            : `<div style="text-align:left">
+                <p>${result.checked} blob(s) verificados · ${escapeHtml(result.bytesLabel || '')}</p>
+                ${result.missing.length ? `<p style="margin-top:6px;color:var(--warning)">Faltan ${result.missing.length} blob(s).</p>` : ''}
+                ${result.corrupt.length ? `<p style="margin-top:6px;color:var(--danger)">${result.corrupt.length} blob(s) corruptos.</p>` : ''}
+                ${result.ok ? '<p style="margin-top:6px">Todos los digests coinciden.</p>' : ''}
+              </div>`
+        });
+      } catch (error) {
+        await errorDialog('No se pudo verificar el modelo', error);
+      } finally {
+        button.disabled = false;
+        button.innerHTML = original;
+      }
+    });
   }
 
   async function deleteModel(id) {
@@ -275,20 +308,18 @@ export function mount(container) {
       return;
     }
     pulling = name;
+    pullJobId = null;
     $('#pull-btn').disabled = true;
     $('#pull-cancel').classList.remove('hidden');
     $('#pull-status').textContent = `Iniciando descarga de ${name}…`;
     try {
-      await call(bridge.ollama.pull, name);
-      if (disposed) return;
-      toast.success('Modelo descargado', name);
-      input.value = '';
-      await Promise.all([refreshModels(), refreshStatus()]);
-      window.dispatchEvent(new CustomEvent('neitor:refresh-data'));
+      const started = await call(bridge.ollama.pull, name);
+      pullJobId = started.jobId;
+      $('#pull-status').textContent = started.queued ? 'Descarga en cola…' : 'Descargando…';
     } catch (error) {
       if (!disposed) toast.error('No se pudo descargar el modelo', error.message);
-    } finally {
       pulling = null;
+      pullJobId = null;
       if (!disposed) {
         $('#pull-btn').disabled = false;
         $('#pull-cancel').classList.add('hidden');
@@ -314,7 +345,7 @@ export function mount(container) {
   });
 
   $('#select-all').addEventListener('change', (event) => {
-    const list = visibleModels();
+    const list = visibleModels().filter((model) => model.exportable);
     selectMany(list.map((model) => model.id), event.target.checked);
     renderRows();
   });
@@ -344,8 +375,13 @@ export function mount(container) {
   });
   $('#bulk-export').addEventListener('click', () => { window.location.hash = '#/export'; });
   $('#models-export').addEventListener('click', () => {
-    if (!selectedModels().length) {
-      toast.warning('Sin selección', 'Marca al menos un modelo para exportar.');
+    const selected = selectedModels();
+    if (!selected.length) {
+      toast.warning('Sin selección', 'Marca al menos un modelo exportable.');
+      return;
+    }
+    if (selected.some((model) => !model.exportable)) {
+      toast.warning('Selección no exportable', 'Hay modelos solo API o con blobs faltantes.');
       return;
     }
     window.location.hash = '#/export';
@@ -371,18 +407,38 @@ export function mount(container) {
     if (event.key === 'Enter') runPull();
   });
   $('#pull-cancel').addEventListener('click', async () => {
-    try { await call(bridge.ollama.cancelPull); } catch { /* ignore */ }
+    try {
+      if (pullJobId) await call(bridge.jobs.cancel, pullJobId);
+      else await call(bridge.ollama.cancelPull);
+    } catch { /* ignore */ }
   });
 
-  const offPull = bridge ? bridge.ollama.onPullProgress((event) => {
+  const offPull = bridge ? bridge.jobs.onProgress((event) => {
     if (disposed) return;
-    if (pulling && event.model && event.model !== pulling) return;
-    const total = Number(event.total) || 0;
-    const completed = Number(event.completed) || 0;
-    const percent = total ? Math.round((completed / total) * 100) : null;
-    const status = event.status || 'descargando';
-    $('#pull-status').textContent = percent !== null ? `${status} · ${percent}%` : `${status}…`;
-    if (event.error) $('#pull-status').textContent = event.error;
+    if (pullJobId && event.jobId !== pullJobId) return;
+    if (event.type && event.type !== 'progress') return;
+    const percent = Number(event.percent);
+    const status = event.phase || 'descargando';
+    $('#pull-status').textContent = Number.isFinite(percent) ? `${status} · ${percent}%` : `${status}…`;
+  }) : () => {};
+
+  const offPullFinished = bridge ? bridge.jobs.onFinished((job) => {
+    if (disposed || !job || job.type !== 'pull') return;
+    if (pullJobId && job.id !== pullJobId) return;
+    pulling = null;
+    pullJobId = null;
+    $('#pull-btn').disabled = false;
+    $('#pull-cancel').classList.add('hidden');
+    $('#pull-status').textContent = '';
+    if (job.status === 'done') {
+      toast.success('Modelo descargado', job.meta && job.meta.model ? job.meta.model : '');
+      $('#pull-input').value = '';
+      Promise.all([refreshModels(), refreshStatus()]).then(() => {
+        window.dispatchEvent(new CustomEvent('neitor:refresh-data'));
+      }).catch(() => {});
+    } else if (job.status === 'error') {
+      toast.error('No se pudo descargar el modelo', job.error && job.error.message ? job.error.message : 'Error desconocido');
+    }
   }) : () => {};
 
   const unsubscribe = subscribe(() => {
@@ -405,5 +461,6 @@ export function mount(container) {
     disposed = true;
     unsubscribe();
     offPull();
+    offPullFinished();
   };
 }

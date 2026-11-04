@@ -158,9 +158,14 @@ class Achievements extends EventEmitter {
       this.state.totals[key] += Math.max(1, models);
       this.state.totals.bytesTransferred += bytes;
       if (event.verified) this.state.totals.verified += 1;
-      if (event.corrupted) this.state.totals.corruptions += 1;
+      const corrupted = Math.max(0, Number(event.corrupted) || 0);
+      if (corrupted) this.state.totals.corruptions += corrupted;
       const base = type === 'export' ? XP.export : XP.import;
       this.addXp(base * Math.max(1, models) + Math.floor(bytes / (100 * 1024 ** 2)) * XP.per100mb + (event.verified ? XP.verified : 0), type);
+    }
+
+    if (type === 'corruption') {
+      this.state.totals.corruptions += Math.max(1, Number(event.count) || 1);
     }
 
     if (type === 'unload') {

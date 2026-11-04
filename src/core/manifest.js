@@ -20,7 +20,19 @@ function readManifest(file) {
   return manifest;
 }
 
+function isSafeDigest(digest) {
+  const value = String(digest || '');
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_+.-]{0,31}:[a-zA-Z0-9_+.-]{8,128}$/.test(value)) return false;
+  if (value.includes('..')) return false;
+  return true;
+}
+
 function digestToBlobName(digest) {
+  if (!isSafeDigest(digest)) {
+    const error = new Error(`Digest inválido o inseguro: ${digest}`);
+    error.code = 'E_TAR_UNSAFE';
+    throw error;
+  }
   return String(digest).replace(':', '-');
 }
 
@@ -59,14 +71,19 @@ function identityFromManifestPath(manifestsRoot, manifestFile) {
 }
 
 function manifestPathFor(manifestsRoot, name, tag) {
-  const parts = String(name).split('/').filter(Boolean);
+  const { validateModelIdentity, assertInside } = require('./paths');
+  const identity = validateModelIdentity({ name, tag });
+  const parts = identity.name.split('/').filter(Boolean);
+  let target;
   if (parts.length === 1) {
-    return path.join(manifestsRoot, 'registry.ollama.ai', 'library', parts[0], tag);
+    target = path.join(manifestsRoot, 'registry.ollama.ai', 'library', parts[0], identity.tag);
+  } else if (parts[0] === 'hf.co' || parts[0].includes('.')) {
+    target = path.join(manifestsRoot, ...parts, identity.tag);
+  } else {
+    target = path.join(manifestsRoot, 'registry.ollama.ai', ...parts, identity.tag);
   }
-  if (parts[0] === 'hf.co' || parts[0].includes('.')) {
-    return path.join(manifestsRoot, ...parts, tag);
-  }
-  return path.join(manifestsRoot, 'registry.ollama.ai', ...parts, tag);
+  assertInside(manifestsRoot, target, 'ruta del manifiesto');
+  return target;
 }
 
 function formatBytes(bytes) {
@@ -114,6 +131,7 @@ module.exports = {
   readJson,
   readManifest,
   digestToBlobName,
+  isSafeDigest,
   digestEntries,
   digestsOf,
   identityFromManifestPath,

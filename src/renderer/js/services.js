@@ -34,7 +34,7 @@ export async function refreshModels({ silent = false } = {}) {
       models: data.models,
       summary: data.summary,
       ollama: data.ollama,
-      base: { ...getState().base, valid: data.models.length >= 0 }
+      base: data.base
     });
     return data;
   } catch (error) {
@@ -52,6 +52,18 @@ export async function refreshStatus() {
     patch({ ollama: { online: false, error: error.message } });
     return null;
   }
+}
+
+export async function listJobs(limit = 50) {
+  return call(bridge.jobs.list, { limit });
+}
+
+export async function cancelJob(id) {
+  return call(bridge.jobs.cancel, id);
+}
+
+export async function clearJobs() {
+  return call(bridge.jobs.clearHistory);
 }
 
 export async function refreshPs() {

@@ -18,7 +18,9 @@ afterAll(() => {
 
 describe('manifest', () => {
   it('traduce digests a nombres de blob', () => {
-    expect(manifest.digestToBlobName('sha256:abc123')).toBe('sha256-abc123');
+    const digest = `sha256:${'a'.repeat(64)}`;
+    expect(manifest.digestToBlobName(digest)).toBe(`sha256-${'a'.repeat(64)}`);
+    expect(() => manifest.digestToBlobName('sha256:../../evil')).toThrow();
   });
 
   it('deriva identidad para library, usuario y hf.co', () => {
@@ -46,14 +48,15 @@ describe('manifest', () => {
     const base = tempDir();
     const blobs = path.join(base, 'blobs');
     fs.mkdirSync(blobs, { recursive: true });
-    fs.writeFileSync(path.join(blobs, 'sha256-config'), JSON.stringify({
+    const digest = `sha256:${'c'.repeat(64)}`;
+    fs.writeFileSync(path.join(blobs, manifest.digestToBlobName(digest)), JSON.stringify({
       model_family: 'qwen2',
       model_families: ['qwen2', 'qwen'],
       model_type: '7B',
       file_type: 'Q4_K_M',
       model_format: 'gguf'
     }));
-    const info = manifest.describeFromConfigBlob(blobs, { config: { digest: 'sha256:config' } });
+    const info = manifest.describeFromConfigBlob(blobs, { config: { digest } });
     expect(info.family).toBe('qwen2');
     expect(info.parameterSize).toBe('7B');
     expect(info.quantization).toBe('Q4_K_M');

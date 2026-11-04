@@ -3,29 +3,48 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  app, BrowserWindow, protocol, ipcMain, shell, nativeTheme, Menu, session
+  app, BrowserWindow, protocol, ipcMain, shell, nativeTheme, Menu, session, dialog
 } = require('electron');
 const config = require('../src/core/config');
 const logger = require('../src/core/logger');
 const jobs = require('../src/core/jobs');
 const achievements = require('../src/core/achievements');
 const conversations = require('../src/core/conversations');
-const { ensureDir } = require('../src/core/paths');
+const { ensureDir, resolveUserDataDir } = require('../src/core/paths');
 const { register } = require('./ipc');
 
 app.setName('OllamaNeitor');
 app.setAppUserModelId('com.neitor.ollamaneitor');
 
-// Aísla los datos de la alfa v0 de versiones anteriores (V1–V3 usaban %APPDATA%\ollamaNeitor).
-const USER_DATA_DIR = path.join(app.getPath('appData'), 'Neitor', 'OllamaNeitor');
-app.setPath('userData', USER_DATA_DIR);
+function pickUserDataDir() {
+  const appData = app.getPath('appData');
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR || '';
+  const preferred = resolveUserDataDir({
+    portableDir,
+    appData,
+    isPackaged: app.isPackaged
+  });
+  try {
+    fs.mkdirSync(preferred, { recursive: true });
+    const probe = path.join(preferred, `.write-test-${process.pid}`);
+    fs.writeFileSync(probe, 'ok');
+    fs.rmSync(probe, { force: true });
+    return { dir: preferred, portable: Boolean(portableDir) && app.isPackaged, fallback: false };
+  } catch (error) {
+    const fallback = resolveUserDataDir({ appData, isPackaged: false });
+    return { dir: fallback, portable: false, fallback: true, reason: error.message };
+  }
+}
+
+const userDataChoice = pickUserDataDir();
+app.setPath('userData', userDataChoice.dir);
 
 const DEV = process.argv.includes('--dev');
 const RENDERER_ROOT = path.resolve(__dirname, '..', 'src', 'renderer');
 const START_URL = 'app://neitor/index.html';
 
 let mainWindow = null;
-let ipcApi = null;
+let isQuitting = false;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -115,6 +134,24 @@ function loadWindowState() {
   return { width: 1320, height: 880, maximized: false };
 }
 
+function cleanupWorkspaces(cfg) {
+  const temp = config.paths().temp;
+  try { fs.rmSync(path.join(temp, 'import'), { recursive: true, force: true }); } catch { /* ignore */ }
+  try { ensureDir(temp); } catch { /* ignore */ }
+  const dest = cfg && cfg.transfer ? cfg.transfer.destDir : '';
+  if (dest && fs.existsSync(dest)) {
+    try { fs.rmSync(path.join(dest, '.neitor-staging'), { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      for (const entry of fs.readdirSync(dest, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        if (entry.name.endsWith('.part') || entry.name.includes('.part-') || entry.name.includes('.bak-')) {
+          try { fs.rmSync(path.join(dest, entry.name), { force: true }); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+}
+
 function createWindow() {
   const state = loadWindowState();
   const win = new BrowserWindow({
@@ -157,7 +194,7 @@ function createWindow() {
   win.on('enter-full-screen', sendMaximized);
   win.on('leave-full-screen', sendMaximized);
 
-  win.on('close', () => {
+  win.on('close', (event) => {
     try {
       const bounds = win.getNormalBounds();
       config.update({
@@ -172,6 +209,32 @@ function createWindow() {
         }
       });
     } catch { /* ignore */ }
+
+    if (isQuitting) return;
+    if (jobs.hasActive()) {
+      const active = jobs.list().filter((job) => ['queued', 'running', 'cancelling'].includes(job.status));
+      const labels = active.map((job) => `${job.type === 'export' ? 'Exportación' : job.type === 'import' ? 'Importación' : 'Descarga'} ${job.meta && job.meta.models ? `(${job.meta.models.length} modelos)` : ''}`).slice(0, 4).join('\n');
+      const choice = dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: ['Cancelar', 'Salir y cancelar'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Transferencia en curso',
+        message: 'Hay operaciones activas. Si sales ahora se cancelarán.',
+        detail: labels || 'Trabajos en curso',
+        noLink: true
+      });
+      if (choice === 0) {
+        event.preventDefault();
+        return;
+      }
+      isQuitting = true;
+      jobs.cancelAll();
+      event.preventDefault();
+      setTimeout(() => {
+        try { win.close(); } catch { /* ignore */ }
+      }, 900);
+    }
   });
 
   win.on('closed', () => {
@@ -235,15 +298,18 @@ async function bootstrap() {
   const userData = app.getPath('userData');
   config.init(userData);
   logger.init(config.paths().logs, config.get().ui.logLevel);
+  logger.setLevel(config.get().ui.logLevel);
+  jobs.setConcurrency(config.get().transfer.concurrency);
   achievements.init(userData);
   conversations.init(config.paths().conversations);
   ensureDir(config.paths().temp);
+  cleanupWorkspaces(config.get());
 
   handleAppProtocol();
   Menu.setApplicationMenu(null);
   nativeTheme.themeSource = 'system';
 
-  ipcApi = register({ getWindow: () => mainWindow });
+  register({ getWindow: () => mainWindow });
   createWindow();
 
   nativeTheme.on('updated', () => {
@@ -256,7 +322,10 @@ async function bootstrap() {
     version: app.getVersion(),
     electron: process.versions.electron,
     platform: process.platform,
-    userData
+    userData,
+    portable: userDataChoice.portable,
+    portableFallback: userDataChoice.fallback,
+    ...(userDataChoice.reason ? { portableFallbackReason: userDataChoice.reason } : {})
   });
 
   if (DEV) {
@@ -294,6 +363,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
   jobs.cancelAll();
 });
 

@@ -118,7 +118,7 @@ async function runExport() {
         path.join(task.stagingDir, 'neitor.json'),
         JSON.stringify({
           app: 'OllamaNeitor',
-          version: '0.1.0-alpha.0',
+          version: '1.0.0',
           exportedAt: new Date().toISOString(),
           model: task.model,
           verified: Boolean(verify),

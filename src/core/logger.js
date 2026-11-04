@@ -6,6 +6,7 @@ const { EventEmitter } = require('node:events');
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const KEEP_FILES = 3;
+const LEVELS = { debug: 10, info: 20, success: 20, warn: 30, error: 40 };
 
 class Logger extends EventEmitter {
   constructor() {
@@ -18,10 +19,15 @@ class Logger extends EventEmitter {
 
   init(dir, level = 'info') {
     this.dir = dir;
-    this.level = level;
+    this.setLevel(level);
     fs.mkdirSync(dir, { recursive: true });
     this.file = path.join(dir, 'app.log');
     this.rotateIfNeeded();
+  }
+
+  setLevel(level) {
+    this.level = LEVELS[level] ? level : 'info';
+    return this.level;
   }
 
   rotateIfNeeded() {
@@ -41,6 +47,7 @@ class Logger extends EventEmitter {
   }
 
   write(level, message, meta) {
+    if ((LEVELS[level] || 20) < (LEVELS[this.level] || 20)) return null;
     const entry = {
       ts: new Date().toISOString(),
       level,

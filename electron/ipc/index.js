@@ -48,6 +48,7 @@ function register({ getWindow }) {
       node: process.versions.node,
       platform: process.platform,
       userData: app.getPath('userData'),
+      portable: Boolean(process.env.PORTABLE_EXECUTABLE_DIR) && app.isPackaged,
       paths: config.paths(),
       base: inspectBasePath(cfg.ollama.basePath),
       config: cfg
@@ -55,8 +56,18 @@ function register({ getWindow }) {
   });
 
   handle('config:get', () => config.get());
-  handle('config:set', (patch) => config.update(patch || {}));
-  handle('config:reset', () => config.reset());
+  handle('config:set', (patch) => {
+    const updated = config.update(patch || {});
+    logger.setLevel(updated.ui.logLevel);
+    jobs.setConcurrency(updated.transfer.concurrency);
+    return updated;
+  });
+  handle('config:reset', () => {
+    const updated = config.reset();
+    logger.setLevel(updated.ui.logLevel);
+    jobs.setConcurrency(updated.transfer.concurrency);
+    return updated;
+  });
   handle('config:paths', () => ({ paths: config.paths(), base: currentBase() }));
 
   handle('system:theme', () => ({ dark: nativeTheme.shouldUseDarkColors }));
@@ -97,6 +108,18 @@ function register({ getWindow }) {
 
   handle('models:blobStats', () => inventory.blobStats(config.get().ollama.basePath));
 
+  handle('models:deleteOrphans', (payload) => inventory.deleteOrphans({
+    basePath: config.get().ollama.basePath,
+    names: payload && Array.isArray(payload.names) ? payload.names : null,
+    dryRun: Boolean(payload && payload.dryRun)
+  }));
+
+  handle('models:verify', (payload) => {
+    const id = typeof payload === 'string' ? payload : payload && payload.id;
+    if (!id) throw new Error('Modelo inválido');
+    return inventory.verifyModel({ basePath: config.get().ollama.basePath, id });
+  });
+
   handle('models:show', async (id) => {
     const cfg = config.get();
     return api.show(cfg.ollama.host, id, 8000);
@@ -136,7 +159,8 @@ function register({ getWindow }) {
         quantization: model.quantization
       })),
       template,
-      verify
+      verify,
+      maxGb: cfg.transfer.maxGb
     });
   });
 
@@ -146,10 +170,12 @@ function register({ getWindow }) {
 
   handle('import:scanFolder', async (folder) => {
     const target = normalize(expandHome(folder));
-    return importer.scanFolder(target);
+    return importer.scanFolder(target, { basePath: config.get().ollama.basePath });
   });
 
-  handle('import:scanTar', async (file) => importer.scanTar(normalize(expandHome(file))));
+  handle('import:scanTar', async (file) => importer.scanTar(normalize(expandHome(file)), {
+    basePath: config.get().ollama.basePath
+  }));
 
   handle('import:start', async (payload) => {
     const cfg = config.get();
@@ -168,10 +194,13 @@ function register({ getWindow }) {
 
   /* ---------------- Ollama ---------------- */
 
-  handle('ollama:status', async () => {
+  handle('ollama:status', async (payload) => {
     const cfg = config.get();
-    const state = await api.status({ host: cfg.ollama.host, timeoutMs: cfg.ollama.timeoutMs });
-    return { ...state, base: inspectBasePath(cfg.ollama.basePath), host: cfg.ollama.host };
+    const host = String((payload && payload.host) || cfg.ollama.host || '').trim();
+    if (!/^https?:\/\//i.test(host)) throw new Error('Host de Ollama inválido');
+    const timeoutMs = Math.min(30000, Math.max(500, Number(payload && payload.timeoutMs) || cfg.ollama.timeoutMs));
+    const state = await api.status({ host, timeoutMs });
+    return { ...state, base: inspectBasePath(cfg.ollama.basePath), host };
   });
 
   handle('ollama:ps', async () => {
@@ -202,33 +231,54 @@ function register({ getWindow }) {
     return { id, freed, freedLabel: formatBytes(freed), state: registered.state };
   });
 
-  const pullControllers = new Map();
+  let pullController = null;
   handle('ollama:pull', async (model) => {
     const cfg = config.get();
     const name = String(model || '').trim();
     if (!name) throw new Error('Indica un modelo para descargar');
-    const controller = new AbortController();
-    pullControllers.set('current', controller);
-    let last = null;
-    try {
-      await api.pull({
-        host: cfg.ollama.host,
-        model: name,
-        signal: controller.signal,
-        onProgress: (event) => {
-          last = event;
-          send('ollama:pullProgress', { model: name, ...event });
+    const job = jobs.enqueue('pull', {
+      meta: { model: name },
+      start: async (current) => {
+        pullController = new AbortController();
+        let last = null;
+        try {
+          await api.pull({
+            host: cfg.ollama.host,
+            model: name,
+            signal: pullController.signal,
+            onProgress: (event) => {
+              last = event;
+              const total = Number(event.total) || 0;
+              const completed = Number(event.completed) || 0;
+              jobs.updateProgress(current.id, {
+                phase: event.status || 'download',
+                model: name,
+                total,
+                completed,
+                percent: total ? Math.min(99, Math.round((completed / total) * 100)) : 0,
+                digest: event.digest || null
+              });
+            }
+          });
+          jobs.finish(current.id, 'done', { model: name, last });
+        } catch (error) {
+          if (error.code === 'E_CANCELLED') jobs.finish(current.id, 'cancelled');
+          else jobs.fail(current.id, error);
+        } finally {
+          pullController = null;
         }
-      });
-      return { model: name, done: true, last };
-    } finally {
-      pullControllers.delete('current');
-    }
+      },
+      cancel: () => {
+        if (pullController) pullController.abort();
+      }
+    });
+    return { jobId: job.id, model: name, queued: job.status === 'queued' };
   });
   handle('ollama:cancelPull', () => {
-    const controller = pullControllers.get('current');
-    if (controller) controller.abort();
-    return { cancelled: Boolean(controller) };
+    const active = jobs.active('pull');
+    if (!active.length) return { cancelled: false };
+    for (const job of active) jobs.cancel(job.id);
+    return { cancelled: true };
   });
 
   /* ---------------- Chat ---------------- */
@@ -261,8 +311,10 @@ function register({ getWindow }) {
           options: {
             temperature: Number(cfg.chat.temperature),
             num_ctx: Number(cfg.chat.num_ctx),
-            top_p: Number(cfg.chat.top_p)
+            top_p: Number(cfg.chat.top_p),
+            ...(Number(cfg.chat.numPredict) > 0 ? { num_predict: Number(cfg.chat.numPredict) } : {})
           },
+          keepAlive: cfg.chat.keepAlive,
           signal: controller.signal,
           onChunk: (delta) => emit('chat:chunk', { streamId, delta })
         });
@@ -390,9 +442,21 @@ function register({ getWindow }) {
     return { applied, enabled: Boolean(enabled) };
   });
 
+  /* ---------------- Trabajos ---------------- */
+
+  handle('jobs:list', (payload) => jobs.list({ limit: (payload && payload.limit) || 50 }));
+  handle('jobs:get', (id) => jobs.getPublic(id));
+  handle('jobs:cancel', (id) => ({ cancelled: jobs.cancel(id) }));
+  handle('jobs:clearHistory', () => jobs.clearHistory());
+
   /* ---------------- Eventos de trabajos y logros ---------------- */
 
-  jobs.on('progress', (payload) => send('transfer:progress', payload));
+  jobs.on('progress', (payload) => {
+    send('jobs:progress', payload);
+    send('transfer:progress', payload);
+  });
+  jobs.on('changed', (list) => send('jobs:changed', list));
+  jobs.on('finished', (job) => send('jobs:finished', job));
   jobs.on('error', (payload) => send('transfer:error', payload));
   jobs.on('cancelled', (payload) => send('transfer:cancelled', payload));
 
@@ -401,15 +465,24 @@ function register({ getWindow }) {
     const job = jobs.get(payload.jobId);
     const results = Array.isArray(payload.results) ? payload.results : [];
     const successful = results.filter((result) => result.ok && !result.skipped);
+    const failed = results.filter((result) => !result.ok);
+    const corrupted = failed.filter((result) => (
+      result.error && ['E_DIGEST_MISMATCH', 'E_CONFLICT'].includes(result.error.code)
+    )).length;
+    if (corrupted) {
+      const registered = achievements.register({ type: 'corruption', count: corrupted });
+      send('achievements:state', registered.state);
+    }
     if (!job || !successful.length) return;
     const bytes = successful.reduce((sum, result) => sum + (Number(result.bytes) || 0), 0);
-    const verified = successful.every((result) => result.verified);
+    const verified = successful.every((result) => result.verified) && corrupted === 0;
     const type = job.type === 'export' ? 'export' : 'import';
     const registered = achievements.register({
       type,
       models: successful.length,
       bytes,
-      verified
+      verified,
+      corrupted
     });
     send('achievements:state', registered.state);
   });
@@ -422,7 +495,6 @@ function register({ getWindow }) {
 
   return {
     broadcast: send,
-    pullControllers,
     chatController
   };
 }

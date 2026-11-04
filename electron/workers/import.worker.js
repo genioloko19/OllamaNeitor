@@ -1,8 +1,13 @@
 'use strict';
 
 /**
- * Worker de importación: extrae en staging, valida rutas, verifica digests,
- * resuelve conflictos y hace commit atómico con rollback.
+ * Worker de importación transaccional por modelo.
+ *
+ * Cada manifiesto es una transacción independiente:
+ *  - blobs y manifiesto se escriben en .part-<uuid> y se renombran al final;
+ *  - un overwrite guarda el manifiesto anterior en .bak-<uuid>;
+ *  - si algo falla, se revierte solo ese modelo;
+ *  - los modelos ya confirmados no se tocan.
  */
 
 const fs = require('node:fs');
@@ -12,6 +17,12 @@ const crypto = require('node:crypto');
 const { parentPort, workerData } = require('node:worker_threads');
 const tar = require('tar');
 const { digestsOf, digestToBlobName, formatBytes } = require('../../src/core/manifest');
+const {
+  validateEntry, scanStaging, normalizeEntryPath
+} = require('../../src/core/tar-safety');
+const {
+  assertInside, validateModelName, validateTag
+} = require('../../src/core/paths');
 
 let cancelled = false;
 parentPort.on('message', (message) => {
@@ -34,13 +45,12 @@ function safeRm(target) {
   try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
-function isSafeEntry(entryPath) {
-  const normalized = String(entryPath || '').replace(/\\/g, '/');
-  if (!normalized || normalized.startsWith('/')) return false;
-  if (/^[a-zA-Z]:/.test(normalized)) return false;
-  const parts = normalized.split('/').filter(Boolean);
-  if (parts.includes('..')) return false;
-  return normalized.startsWith('manifests/') || normalized.startsWith('blobs/') || normalized === 'neitor.json';
+function isRegularFile(file) {
+  try {
+    return fs.lstatSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function walk(dir, out = []) {
@@ -89,20 +99,164 @@ function hashFile(file) {
   });
 }
 
-function nextFreeTag(manifestsRoot, relParts) {
-  const tag = relParts[relParts.length - 1];
+async function nextFreeTag(manifestsRoot, relParts) {
   const base = relParts.slice(0, -1);
+  const tag = relParts[relParts.length - 1];
   let candidate = `${tag}-imported`;
   let index = 2;
   for (;;) {
     const target = path.join(manifestsRoot, ...base, candidate);
-    if (!fs.existsSync(target)) return { tag: candidate, relParts: [...base, candidate] };
+    assertInside(manifestsRoot, target, 'manifiesto renombrado');
+    if (!fs.existsSync(target)) return [...base, candidate];
     candidate = `${tag}-imported-${index}`;
     index += 1;
   }
 }
 
-async function commitModel({ manifestFile, relParts, staging, manifestsRoot, blobsRoot, conflict, verify, created }) {
+function validateRelParts(relParts) {
+  if (!Array.isArray(relParts) || relParts.length < 2) {
+    const error = new Error('Ruta de manifiesto inválida');
+    error.code = 'E_TAR_UNSAFE';
+    throw error;
+  }
+  const tag = relParts[relParts.length - 1];
+  const nameParts = relParts.slice(0, -1);
+  validateModelName(nameParts.join('/'));
+  validateTag(tag);
+  for (const part of relParts) {
+    if (!part || part === '.' || part === '..') {
+      const error = new Error(`Segmento de ruta inválido: ${part}`);
+      error.code = 'E_TAR_UNSAFE';
+      throw error;
+    }
+  }
+}
+
+class ModelTransaction {
+  constructor({ staging, manifestsRoot, blobsRoot, verify }) {
+    this.staging = staging;
+    this.manifestsRoot = manifestsRoot;
+    this.blobsRoot = blobsRoot;
+    this.verify = verify;
+    this.createdBlobs = [];
+    this.createdManifests = [];
+    this.backups = [];
+    this.temps = [];
+    this.replaced = false;
+  }
+
+  trackTemp(file) {
+    this.temps.push(file);
+    return file;
+  }
+
+  async copyBlob(blobName, digest, size) {
+    const source = path.join(this.staging, 'blobs', blobName);
+    if (!isRegularFile(source)) {
+      const error = new Error(`Falta el blob ${blobName} dentro del paquete`);
+      error.code = 'E_TAR_INVALID';
+      throw error;
+    }
+    const target = path.join(this.blobsRoot, blobName);
+    assertInside(this.blobsRoot, target, 'blob de destino');
+
+    if (fs.existsSync(target)) {
+      const existing = fs.statSync(target);
+      if (!existing.isFile() || existing.size !== size) {
+        const error = new Error(`El blob ${blobName} ya existe con un tamaño distinto`);
+        error.code = 'E_CONFLICT';
+        throw error;
+      }
+      if (this.verify) {
+        const actual = await hashFile(target);
+        if (actual !== digest) {
+          const error = new Error(`El blob existente ${blobName} no coincide con su digest`);
+          error.code = 'E_CONFLICT';
+          throw error;
+        }
+      }
+      return { skipped: true, bytes: 0 };
+    }
+
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    const temp = this.trackTemp(path.join(this.blobsRoot, `.${blobName}.part-${crypto.randomUUID()}`));
+    await fsp.copyFile(source, temp);
+    if (this.verify) {
+      const actual = await hashFile(temp);
+      if (actual !== digest) {
+        const error = new Error(`Digest distinto en ${blobName} (esperado ${digest}, obtenido ${actual})`);
+        error.code = 'E_DIGEST_MISMATCH';
+        throw error;
+      }
+    }
+    try {
+      await fsp.rename(temp, target);
+    } catch (error) {
+      if (error.code === 'EEXIST' || fs.existsSync(target)) {
+        safeRm(temp);
+        return { skipped: true, bytes: 0 };
+      }
+      throw error;
+    }
+    this.temps = this.temps.filter((item) => item !== temp);
+    this.createdBlobs.push(target);
+    return { skipped: false, bytes: size };
+  }
+
+  async commitManifest(source, relParts, conflict) {
+    validateRelParts(relParts);
+    let targetRel = [...relParts];
+    let target = path.join(this.manifestsRoot, ...targetRel);
+    assertInside(this.manifestsRoot, target, 'manifiesto de destino');
+
+    if (fs.existsSync(target)) {
+      if (conflict === 'skip') {
+        return { skipped: true, target, targetRel };
+      }
+      if (conflict === 'rename') {
+        targetRel = await nextFreeTag(this.manifestsRoot, relParts);
+        target = path.join(this.manifestsRoot, ...targetRel);
+        assertInside(this.manifestsRoot, target, 'manifiesto renombrado');
+      } else {
+        const backup = this.trackTemp(`${target}.bak-${crypto.randomUUID()}`);
+        await fsp.copyFile(target, backup);
+        this.backups.push({ target, backup });
+        this.replaced = true;
+      }
+    }
+
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    const temp = this.trackTemp(`${target}.part-${crypto.randomUUID()}`);
+    await fsp.copyFile(source, temp);
+    if (fs.existsSync(target) && conflict === 'overwrite') {
+      await fsp.rm(target, { force: true });
+    }
+    await fsp.rename(temp, target);
+    this.temps = this.temps.filter((item) => item !== temp);
+    this.createdManifests.push(target);
+    return { skipped: false, target, targetRel, replaced: this.replaced };
+  }
+
+  rollback() {
+    for (const manifest of this.createdManifests) safeRm(manifest);
+    for (const blob of this.createdBlobs) safeRm(blob);
+    for (const { target, backup } of this.backups) {
+      try {
+        if (fs.existsSync(backup)) {
+          fs.rmSync(target, { force: true });
+          fs.renameSync(backup, target);
+        }
+      } catch { /* ignore */ }
+    }
+    for (const temp of this.temps) safeRm(temp);
+  }
+
+  cleanupBackups() {
+    for (const { backup } of this.backups) safeRm(backup);
+  }
+}
+
+async function importManifest({ manifestFile, relParts, staging, manifestsRoot, blobsRoot, conflict, verify, progress }) {
   const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
   if (!manifest || !Array.isArray(manifest.layers)) {
     const error = new Error('Manifiesto inválido dentro del paquete');
@@ -110,94 +264,86 @@ async function commitModel({ manifestFile, relParts, staging, manifestsRoot, blo
     throw error;
   }
   const digests = digestsOf(manifest);
-  const blobs = [];
+  const transaction = new ModelTransaction({ staging, manifestsRoot, blobsRoot, verify });
   let bytes = 0;
 
-  for (const digest of digests) {
-    const blobName = digestToBlobName(digest);
-    const source = path.join(staging, 'blobs', blobName);
-    if (!fs.existsSync(source)) {
-      const error = new Error(`Falta el blob ${blobName} dentro del paquete`);
-      error.code = 'E_TAR_INVALID';
-      throw error;
-    }
-    const stat = fs.statSync(source);
-    bytes += stat.size;
-    if (verify) {
-      const actual = await hashFile(source);
-      if (actual !== digest) {
-        const error = new Error(`Digest distinto en ${blobName} (esperado ${digest}, obtenido ${actual})`);
-        error.code = 'E_DIGEST_MISMATCH';
+  try {
+    const identity = identityFromRel(relParts);
+    progress({ phase: 'verify', model: identity });
+
+    // Verificación previa de todos los blobs antes de tocar el destino.
+    for (const digest of digests) {
+      const blobName = digestToBlobName(digest);
+      const source = path.join(staging, 'blobs', blobName);
+      if (!isRegularFile(source)) {
+        const error = new Error(`Falta el blob ${blobName} dentro del paquete`);
+        error.code = 'E_TAR_INVALID';
         throw error;
       }
-    }
-    blobs.push({ digest, blobName, source, size: stat.size });
-  }
-
-  assertNotCancelled();
-
-  let targetRel = relParts;
-  let targetManifest = path.join(manifestsRoot, ...targetRel);
-  let replaced = false;
-
-  if (fs.existsSync(targetManifest)) {
-    if (conflict === 'skip') {
-      const { name } = identityFromRel(relParts);
-      return { ok: true, skipped: true, model: { name, tag: relParts[relParts.length - 1] }, target: targetManifest, bytes: 0 };
-    }
-    if (conflict === 'rename') {
-      const renamed = nextFreeTag(manifestsRoot, relParts);
-      targetRel = renamed.relParts;
-      targetManifest = path.join(manifestsRoot, ...targetRel);
-    } else {
-      replaced = true;
-    }
-  }
-
-  const createdBlobs = [];
-  const createdManifest = !fs.existsSync(targetManifest);
-
-  for (const blob of blobs) {
-    const target = path.join(blobsRoot, blob.blobName);
-    if (fs.existsSync(target)) {
-      const existing = fs.statSync(target);
-      if (existing.size !== blob.size) {
-        const error = new Error(`El blob ${blob.blobName} ya existe con un tamaño distinto`);
-        error.code = 'E_CONFLICT';
-        throw error;
+      if (verify) {
+        const actual = await hashFile(source);
+        if (actual !== digest) {
+          const error = new Error(`Digest distinto en ${blobName} (esperado ${digest}, obtenido ${actual})`);
+          error.code = 'E_DIGEST_MISMATCH';
+          throw error;
+        }
       }
-      continue;
     }
-    await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.copyFile(blob.source, target);
-    createdBlobs.push(target);
-    created.blobs.push(target);
+
+    assertNotCancelled();
+
+    // Si el destino existe y la política es omitir, no se copia nada.
+    const targetPreview = path.join(manifestsRoot, ...relParts);
+    assertInside(manifestsRoot, targetPreview, 'manifiesto de destino');
+    if (conflict === 'skip' && fs.existsSync(targetPreview)) {
+      transaction.cleanupBackups();
+      return {
+        ok: true,
+        skipped: true,
+        model: { id: `${identity.name}:${identity.tag}`, ...identity },
+        target: targetPreview,
+        bytes: 0,
+        verified: Boolean(verify)
+      };
+    }
+
+    progress({ phase: 'commit', model: identity });
+    for (const digest of digests) {
+      assertNotCancelled();
+      const blobName = digestToBlobName(digest);
+      const size = fs.statSync(path.join(staging, 'blobs', blobName)).size;
+      const result = await transaction.copyBlob(blobName, digest, size);
+      bytes += result.bytes;
+    }
+
+    assertNotCancelled();
+    const committed = await transaction.commitManifest(manifestFile, relParts, conflict);
+    const finalIdentity = identityFromRel(committed.targetRel || relParts);
+    transaction.cleanupBackups();
+
+    return {
+      ok: true,
+      skipped: Boolean(committed.skipped),
+      model: { id: `${finalIdentity.name}:${finalIdentity.tag}`, ...finalIdentity },
+      target: committed.target,
+      bytes,
+      verified: Boolean(verify),
+      replaced: Boolean(committed.replaced),
+      sizeLabel: formatBytes(bytes)
+    };
+  } catch (error) {
+    transaction.rollback();
+    throw error;
   }
-
-  await fsp.mkdir(path.dirname(targetManifest), { recursive: true });
-  await fsp.copyFile(manifestFile, targetManifest);
-  if (createdManifest) created.manifests.push(targetManifest);
-
-  const { name, tag } = identityFromRel(targetRel);
-  return {
-    ok: true,
-    model: { id: `${name}:${tag}`, name, tag, family: '', parameterSize: '', quantization: '' },
-    target: targetManifest,
-    bytes,
-    verified: Boolean(verify),
-    replaced,
-    sizeLabel: formatBytes(bytes)
-  };
 }
 
 async function runImport() {
-  const { tasks, basePath, manifestsRoot, blobsRoot, conflict, verify } = workerData;
+  const { tasks, manifestsRoot, blobsRoot, conflict, verify } = workerData;
   const results = [];
 
   for (let index = 0; index < tasks.length; index += 1) {
     const task = tasks[index];
     const startedAt = Date.now();
-    const created = { blobs: [], manifests: [] };
     const progress = (fraction, phase, extra = {}) => {
       emit({
         type: 'progress',
@@ -214,7 +360,7 @@ async function runImport() {
       assertNotCancelled();
       safeRm(task.stagingDir);
       await fsp.mkdir(task.stagingDir, { recursive: true });
-      progress(0.04, 'extract');
+      progress(0.02, 'extract');
 
       const unsafe = [];
       await tar.x({
@@ -222,14 +368,20 @@ async function runImport() {
         cwd: task.stagingDir,
         preservePaths: false,
         strict: true,
-        filter: (entryPath) => {
-          if (isSafeEntry(entryPath)) return true;
-          unsafe.push(entryPath);
+        filter: (entryPath, entry) => {
+          const check = validateEntry(normalizeEntryPath(entryPath), entry && entry.type);
+          if (check.ok) return true;
+          unsafe.push({ path: entryPath, reason: check.reason });
           return false;
         }
       });
-      if (unsafe.length) {
-        const error = new Error(`Entradas no permitidas: ${unsafe.slice(0, 3).join(', ')}`);
+
+      const stagingCheck = scanStaging(task.stagingDir);
+      if (unsafe.length || !stagingCheck.ok) {
+        const reasons = [...unsafe, ...stagingCheck.unsafe].slice(0, 8)
+          .map((item) => `${item.path}: ${item.reason}`)
+          .join('; ');
+        const error = new Error(`Entradas no permitidas: ${reasons}`);
         error.code = 'E_TAR_UNSAFE';
         throw error;
       }
@@ -242,30 +394,42 @@ async function runImport() {
         throw error;
       }
 
-      const imported = [];
       for (let i = 0; i < files.length; i += 1) {
         assertNotCancelled();
         const manifestFile = files[i];
         const relParts = path.relative(stagingManifests, manifestFile).split(path.sep).filter(Boolean);
-        progress(0.25 + (0.7 * (i / files.length)), 'verify', {
-          model: identityFromRel(relParts)
-        });
-        const result = await commitModel({
-          manifestFile,
-          relParts,
-          staging: task.stagingDir,
-          manifestsRoot,
-          blobsRoot,
-          conflict,
-          verify,
-          created
-        });
-        imported.push(result);
-        results.push(result);
-        emit({ type: 'task-done', result });
+        try {
+          const result = await importManifest({
+            manifestFile,
+            relParts,
+            staging: task.stagingDir,
+            manifestsRoot,
+            blobsRoot,
+            conflict,
+            verify,
+            progress: (extra) => progress(0.2 + (0.75 * (i / files.length)), extra.phase, extra)
+          });
+          result.file = task.file;
+          result.fileName = task.fileName;
+          result.seconds = (Date.now() - startedAt) / 1000;
+          results.push(result);
+          emit({ type: 'task-done', result });
+        } catch (error) {
+          if (error.code === 'E_CANCELLED' || cancelled) throw error;
+          const result = {
+            ok: false,
+            file: task.file,
+            fileName: task.fileName,
+            model: identityFromRel(relParts),
+            error: { code: error.code || 'E_UNKNOWN', message: error.message },
+            seconds: (Date.now() - startedAt) / 1000
+          };
+          results.push(result);
+          emit({ type: 'task-error', result });
+        }
       }
 
-      progress(0.98, 'commit');
+      progress(0.99, 'commit');
       safeRm(task.stagingDir);
       emit({
         type: 'progress',
@@ -273,12 +437,9 @@ async function runImport() {
         taskIndex: index + 1,
         taskCount: tasks.length,
         file: task.fileName,
-        percent: Math.round(((index + 1) / tasks.length) * 100),
-        imported
+        percent: Math.round(((index + 1) / tasks.length) * 100)
       });
     } catch (error) {
-      for (const manifest of created.manifests) safeRm(manifest);
-      for (const blob of created.blobs) safeRm(blob);
       safeRm(task.stagingDir);
       if (error.code === 'E_CANCELLED' || cancelled) {
         emit({ type: 'cancelled' });

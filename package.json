@@ -1,7 +1,7 @@
 {
   "name": "ollamaneitor",
   "productName": "OllamaNeitor",
-  "version": "0.1.0-alpha.0",
+  "version": "1.0.0",
   "description": "Gestor de modelos de Ollama con interfaz glass y dashboard gamificado",
   "main": "electron/main.js",
   "author": "genioloko19",
@@ -15,6 +15,9 @@
     "url": "https://github.com/genioloko19/OllamaNeitor/issues"
   },
   "private": true,
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "start": "npm run themes:build && electron .",
     "dev": "npm run themes:build && electron . --dev",
@@ -25,6 +28,7 @@
     "icon:build": "node tools/make-icon.mjs",
     "test": "npm run themes:build && vitest run",
     "test:watch": "vitest",
+    "verify": "npm run themes:build && npm run audit:contrast && vitest run",
     "audit:contrast": "node tools/audit-contrast.mjs",
     "build:win": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win nsis portable --publish never",
     "build:dir": "npm run themes:build && npm run vendor:copy && npm run icon:build && electron-builder --win --dir --publish never"
@@ -41,7 +45,10 @@
       "electron/**/*",
       "src/core/**/*",
       "src/renderer/**/*",
-      "package.json"
+      "package.json",
+      "README.md",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "win": {
       "target": [

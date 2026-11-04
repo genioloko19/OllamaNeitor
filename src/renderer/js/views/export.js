@@ -1,8 +1,8 @@
-/** Vista Exportar: selección, plantilla de nombre, progreso y verificación. */
+/** Vista Exportar: selección, plantilla, trabajos reenganchables y verificación. */
 
-import { getState, subscribe, setSelected, selectMany, selectedModels, clearSelection } from '../store.js';
+import { getState, subscribe, setSelected, selectMany, selectedModels } from '../store.js';
 import { bridge, call } from '../ipc.js';
-import { refreshAchievements } from '../services.js';
+import { refreshAchievements, listJobs } from '../services.js';
 import { fmtBytes, escapeHtml, debounce } from '../lib/format.js';
 import { toast } from '../lib/toast.js';
 import { alert, errorDialog } from '../lib/swal.js';
@@ -13,6 +13,7 @@ export function mount(container) {
   let running = false;
   let lastPercent = 0;
   let lastModels = null;
+  let activeJobs = [];
 
   const config = getState().config || {};
   const transfer = config.transfer || {};
@@ -70,8 +71,9 @@ export function mount(container) {
             <div class="row-wrap">
               <span class="pill pill-accent" id="exp-count">0 modelos</span>
               <span class="pill" id="exp-size">0 B</span>
+              <span class="pill" id="exp-exportable">0 exportables</span>
             </div>
-            <small>La selección se comparte con la vista Modelos.</small>
+            <small>Solo se pueden exportar modelos con manifiesto y blobs locales.</small>
           </div>
         </div>
       </section>
@@ -80,7 +82,7 @@ export function mount(container) {
         <table class="data">
           <thead>
             <tr>
-              <th class="check"><input type="checkbox" class="check" id="exp-select-all" aria-label="Seleccionar todo" /></th>
+              <th class="check"><input type="checkbox" class="check" id="exp-select-all" aria-label="Seleccionar exportables" /></th>
               <th>Modelo</th>
               <th>Familia</th>
               <th>Quant</th>
@@ -95,7 +97,7 @@ export function mount(container) {
       <section class="glass-panel" style="padding:14px 16px" id="exp-progress-card">
         <div class="row-wrap" style="justify-content:space-between">
           <div class="row">
-            <button id="exp-start" class="btn btn-primary"><i class="fa-solid fa-box-open"></i> Exportar seleccionados</button>
+            <button id="exp-start" class="btn btn-primary" disabled><i class="fa-solid fa-box-open"></i> Exportar seleccionados</button>
             <button id="exp-cancel" class="btn btn-danger hidden"><i class="fa-solid fa-stop"></i> Cancelar</button>
           </div>
           <span id="exp-status" class="tiny muted">Listo para exportar.</span>
@@ -111,17 +113,25 @@ export function mount(container) {
 
   const $ = (selector) => container.querySelector(selector);
 
+  function activeExport() {
+    return activeJobs.find((job) => job.type === 'export' && ['queued', 'running', 'cancelling'].includes(job.status));
+  }
+
   function updateSummary() {
     const state = getState();
     const selected = selectedModels();
+    const exportable = state.models.filter((model) => model.exportable);
     const total = selected.reduce((sum, model) => sum + (model.sizeBytes || 0), 0);
     $('#exp-count').textContent = `${selected.length} modelo(s)`;
     $('#exp-size').textContent = fmtBytes(total);
-    const all = state.models;
+    $('#exp-exportable').textContent = `${exportable.length} exportables`;
+
     const checkbox = $('#exp-select-all');
-    checkbox.checked = all.length > 0 && all.every((model) => state.selection.has(model.id));
-    checkbox.indeterminate = !checkbox.checked && all.some((model) => state.selection.has(model.id));
-    if (!running) $('#exp-start').disabled = selected.length === 0;
+    checkbox.checked = exportable.length > 0 && exportable.every((model) => state.selection.has(model.id));
+    checkbox.indeterminate = !checkbox.checked && exportable.some((model) => state.selection.has(model.id));
+
+    const busy = running || Boolean(activeExport());
+    $('#exp-start').disabled = busy || selected.length === 0 || selected.some((model) => !model.exportable);
   }
 
   function renderTable() {
@@ -134,29 +144,44 @@ export function mount(container) {
     }
     body.innerHTML = state.models.map((model) => {
       const selected = state.selection.has(model.id);
+      const disabled = !model.exportable;
       return `
         <tr class="${selected ? 'selected' : ''}" data-id="${escapeHtml(model.id)}">
-          <td class="check"><input type="checkbox" class="check" data-select="${escapeHtml(model.id)}" ${selected ? 'checked' : ''} /></td>
-          <td><div class="row" style="gap:6px"><strong>${escapeHtml(model.name)}</strong><span class="pill">${escapeHtml(model.tag)}</span></div></td>
+          <td class="check">
+            <input type="checkbox" class="check" data-select="${escapeHtml(model.id)}"
+              ${selected ? 'checked' : ''} ${disabled ? 'disabled' : ''}
+              title="${disabled ? escapeHtml(model.exportBlockReason || 'no exportable') : 'Seleccionar'}" />
+          </td>
+          <td>
+            <div class="row" style="gap:6px">
+              <strong>${escapeHtml(model.name)}</strong>
+              <span class="pill">${escapeHtml(model.tag)}</span>
+              ${disabled ? `<span class="pill pill-warning" title="${escapeHtml(model.exportBlockReason || '')}">no exportable</span>` : ''}
+            </div>
+          </td>
           <td>${model.family ? `<span class="pill pill-accent">${escapeHtml(model.family)}</span>` : '<span class="soft">—</span>'}</td>
           <td>${model.quantization ? `<span class="mono">${escapeHtml(model.quantization)}</span>` : '<span class="soft">—</span>'}</td>
           <td class="nowrap">${fmtBytes(model.sizeBytes)}</td>
-          <td class="tiny muted truncate" style="max-width:240px" title="${escapeHtml(model.manifestPath || '')}">${model.manifestPath ? escapeHtml(model.manifestPath.split(/[\\/]/).slice(-4).join('/')) : 'solo API'}</td>
+          <td class="tiny muted truncate" style="max-width:240px" title="${escapeHtml(model.manifestPath || '')}">
+            ${model.manifestPath ? escapeHtml(model.manifestPath.split(/[\\/]/).slice(-4).join('/')) : 'solo API'}
+          </td>
         </tr>
       `;
     }).join('');
     updateSummary();
   }
 
-  function updatePreview() {
+  function templatePreview() {
     const value = $('#exp-template').value || '{modelo}_{tag}';
-    const sample = getState().models[0] || { name: 'llama3', tag: 'latest', family: 'llama', quantization: 'Q4_K_M' };
+    const sample = getState().models.find((model) => model.exportable)
+      || { name: 'llama3', tag: 'latest', family: 'llama', quantization: 'Q4_K_M' };
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const preview = value
       .replace(/\{modelo\}/g, sample.name)
       .replace(/\{tag\}/g, sample.tag || 'latest')
       .replace(/\{familia\}/g, sample.family || 'familia')
       .replace(/\{quant\}/g, sample.quantization || 'quant')
-      .replace(/\{fecha\}/g, new Date().toISOString().slice(0, 10));
+      .replace(/\{fecha\}/g, stamp);
     $('#exp-preview').textContent = `${preview}.tar`;
   }
 
@@ -168,12 +193,111 @@ export function mount(container) {
     $('#exp-status').textContent = 'Listo para exportar.';
   }
 
+  function applyProgress(progress) {
+    if (!progress) return;
+    if (progress.model && !progress.percent && progress.percent !== 0) return;
+    const percent = Number(progress.percent) || 0;
+    if (percent >= lastPercent) {
+      lastPercent = percent;
+      $('#exp-bar').style.width = `${percent}%`;
+      $('#exp-percent').textContent = `${percent} %`;
+    }
+    const model = progress.model ? `${progress.model.name}:${progress.model.tag}` : (progress.meta && progress.meta.model ? progress.meta.model : '');
+    const phase = progress.phase === 'package' ? 'Empaquetando' : progress.phase === 'copy' ? 'Copiando' : 'Procesando';
+    $('#exp-status').textContent = `${phase}${progress.taskIndex ? ` ${progress.taskIndex}/${progress.taskCount}` : ''}${model ? ` · ${model}` : ''}`;
+    $('#exp-file').textContent = progress.file || '';
+    if (percent >= 100) $('#exp-status').textContent = 'Completado';
+  }
+
+  async function adoptJob(job) {
+    if (!job) return;
+    jobId = job.id;
+    running = true;
+    $('#exp-start').disabled = true;
+    $('#exp-cancel').classList.remove('hidden');
+    $('#exp-status').textContent = job.status === 'queued' ? 'En cola…' : 'Recuperando progreso…';
+    if (job.progress) applyProgress(job.progress);
+  }
+
+  async function refreshJobs({ adopt = false } = {}) {
+    try {
+      const list = await listJobs();
+      activeJobs = Array.isArray(list) ? list : [];
+      if (adopt) {
+        const active = activeExport();
+        if (active && !running) await adoptJob(active);
+        if (!active && !running) {
+          const last = activeJobs.find((job) => job.type === 'export' && ['done', 'partial', 'error', 'cancelled'].includes(job.status));
+          if (last) {
+            $('#exp-status').textContent = last.status === 'done'
+              ? `Última exportación completada${last.result && last.result.exportFolder ? ` · ${last.result.exportFolder}` : ''}`
+              : `Última exportación: ${last.status}`;
+          }
+        }
+      }
+      updateSummary();
+    } catch { /* ignore */ }
+  }
+
+  function finish(job) {
+    running = false;
+    jobId = null;
+    $('#exp-cancel').classList.add('hidden');
+    refreshJobs();
+    if (!job) return;
+    const results = job.result && Array.isArray(job.result.results) ? job.result.results : [];
+    const ok = results.filter((result) => result.ok && !result.skipped);
+    const failed = results.filter((result) => !result.ok);
+    const bytes = ok.reduce((sum, result) => sum + (result.bytes || 0), 0);
+
+    if (job.status === 'cancelled') {
+      resetProgress();
+      $('#exp-status').textContent = 'Exportación cancelada.';
+      toast.warning('Exportación cancelada');
+      return;
+    }
+    if (job.status === 'error') {
+      resetProgress();
+      $('#exp-status').textContent = 'Error en la exportación.';
+      toast.error('Exportación fallida', job.error && job.error.message ? job.error.message : 'Error desconocido');
+      return;
+    }
+
+    $('#exp-bar').style.width = '100%';
+    $('#exp-percent').textContent = '100 %';
+    $('#exp-status').textContent = `Completado · ${ok.length} correcto(s), ${failed.length} fallido(s)`;
+    refreshAchievements().catch(() => {});
+    if (failed.length === 0 && ok.length) {
+      import('../lib/confetti.js').then(({ celebrate }) => celebrate()).catch(() => {});
+    }
+    alert({
+      title: failed.length ? 'Exportación completada con incidencias' : 'Exportación completada',
+      icon: failed.length ? 'warning' : 'success',
+      html: `
+        <div style="text-align:left">
+          <p><strong>${ok.length}</strong> exportado(s) · <strong>${failed.length}</strong> fallido(s) · ${fmtBytes(bytes)}</p>
+          <p style="margin-top:6px">Carpeta: <span class="mono">${escapeHtml((job.result && job.result.exportFolder) || '')}</span></p>
+          ${failed.length ? `<ul style="margin-top:8px;padding-left:18px;font-size:11px">${failed.map((result) => `<li>${escapeHtml(result.model?.id || 'modelo')}: ${escapeHtml(result.error?.message || 'error')}</li>`).join('')}</ul>` : ''}
+        </div>
+      `
+    });
+  }
+
   async function start() {
     if (running) return;
     const state = getState();
     const models = selectedModels();
     if (!models.length) {
-      toast.warning('Sin selección', 'Marca al menos un modelo.');
+      toast.warning('Sin selección', 'Marca al menos un modelo exportable.');
+      return;
+    }
+    const invalid = models.filter((model) => !model.exportable);
+    if (invalid.length) {
+      toast.error('Selección no exportable', `${invalid.length} modelo(s) solo existen vía API o tienen blobs faltantes.`);
+      return;
+    }
+    if (activeExport()) {
+      toast.warning('Exportación en curso', 'Espera a que termine la operación actual.');
       return;
     }
     const destDir = $('#exp-dest').value.trim();
@@ -182,14 +306,12 @@ export function mount(container) {
       $('#exp-dest').focus();
       return;
     }
-    const templateValue = $('#exp-template').value.trim() || '{modelo}_{tag}';
-    const verifyValue = $('#exp-verify').checked;
 
     running = true;
     jobId = null;
     $('#exp-start').disabled = true;
     $('#exp-cancel').classList.remove('hidden');
-    $('#exp-status').textContent = `Validando ${selectedModels().length} modelo(s)…`;
+    $('#exp-status').textContent = `Validando ${models.length} modelo(s)…`;
     lastPercent = 0;
     $('#exp-bar').style.width = '0%';
 
@@ -204,13 +326,14 @@ export function mount(container) {
           quantization: model.quantization
         })),
         destDir,
-        template: templateValue,
-        verify: verifyValue
+        template: $('#exp-template').value.trim() || '{modelo}_{tag}',
+        verify: $('#exp-verify').checked
       });
       jobId = result.jobId;
       if (disposed) return;
-      $('#exp-status').textContent = `Exportando ${result.taskCount} modelo(s)…`;
-      toast.info('Exportación iniciada', `${result.taskCount} modelo(s) · ${fmtBytes(result.totalBytes)}`);
+      $('#exp-status').textContent = result.queued ? 'Trabajo en cola…' : `Exportando ${result.taskCount} modelo(s)…`;
+      toast.info(result.queued ? 'Exportación en cola' : 'Exportación iniciada', `${result.taskCount} modelo(s) · ${fmtBytes(result.totalBytes)}`);
+      setTimeout(() => refreshJobs({ adopt: true }), 150);
     } catch (error) {
       running = false;
       if (disposed) return;
@@ -221,91 +344,42 @@ export function mount(container) {
     }
   }
 
-  function finish() {
-    running = false;
-    jobId = null;
-    $('#exp-start').disabled = false;
-    $('#exp-cancel').classList.add('hidden');
-  }
+  /* ---------------- Eventos de trabajos ---------------- */
 
-  /* ---------------- Eventos IPC ---------------- */
-
-  const offProgress = bridge ? bridge.transfer.onProgress((event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    if (event.type === 'task-done') {
-      $('#exp-status').textContent = `Empaquetado: ${event.result?.model?.id || ''}`;
-      return;
+  const offProgress = bridge ? bridge.jobs.onProgress((progress) => {
+    if (disposed) return;
+    if (jobId && progress.jobId !== jobId) return;
+    if (!jobId && progress.type === 'export') {
+      jobId = progress.jobId;
+      running = true;
+      $('#exp-cancel').classList.remove('hidden');
     }
-    if (event.type === 'task-error') {
-      $('#exp-status').textContent = `Error en ${event.result?.model?.id || 'modelo'}`;
-      return;
-    }
-    const percent = Number(event.percent) || 0;
-    if (percent >= lastPercent) {
-      lastPercent = percent;
-      $('#exp-bar').style.width = `${percent}%`;
-      $('#exp-percent').textContent = `${percent} %`;
-    }
-    const model = event.model ? `${event.model.name}:${event.model.tag}` : '';
-    const phase = event.phase === 'package' ? 'Empaquetando' : 'Copiando';
-    $('#exp-status').textContent = `${phase} ${event.taskIndex}/${event.taskCount} · ${model}`;
-    $('#exp-file').textContent = event.file || '';
+    if (progress.type === 'export') applyProgress(progress);
   }) : () => {};
 
-  const offResult = bridge ? bridge.transfer.onResult(async (event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    const results = Array.isArray(event.results) ? event.results : [];
-    const ok = results.filter((result) => result.ok);
-    const failed = results.filter((result) => !result.ok);
-    const bytes = ok.reduce((sum, result) => sum + (result.bytes || 0), 0);
-    $('#exp-bar').style.width = '100%';
-    $('#exp-percent').textContent = '100 %';
-    $('#exp-status').textContent = `Completado · ${ok.length} correcto(s), ${failed.length} fallido(s)`;
-    finish();
-    await refreshAchievements();
-    if (window.confetti && failed.length === 0 && ok.length) {
-      const { celebrate } = await import('../lib/confetti.js');
-      celebrate();
-    }
-    await alert({
-      title: failed.length ? 'Exportación completada con incidencias' : 'Exportación completada',
-      icon: failed.length ? 'warning' : 'success',
-      html: `
-        <div style="text-align:left">
-          <p><strong>${ok.length}</strong> exportado(s) · <strong>${failed.length}</strong> fallido(s) · ${fmtBytes(bytes)}</p>
-          <p style="margin-top:6px">Carpeta: <span class="mono">${escapeHtml(event.exportFolder || '')}</span></p>
-          ${failed.length ? `<ul style="margin-top:8px;padding-left:18px;font-size:11px">${failed.map((result) => `<li>${escapeHtml(result.model?.id || 'modelo')}: ${escapeHtml(result.error?.message || 'error')}</li>`).join('')}</ul>` : ''}
-        </div>
-      `
-    });
+  const offFinished = bridge ? bridge.jobs.onFinished((job) => {
+    if (disposed || !job || job.type !== 'export') return;
+    if (jobId && job.id !== jobId) return;
+    finish(job);
   }) : () => {};
 
-  const offError = bridge ? bridge.transfer.onError(async (event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    finish();
-    resetProgress();
-    $('#exp-status').textContent = 'Error en la exportación.';
-    toast.error('Exportación fallida', event.error?.message || 'Error desconocido');
-  }) : () => {};
-
-  const offCancelled = bridge ? bridge.transfer.onCancelled((event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    finish();
-    resetProgress();
-    toast.warning('Exportación cancelada');
+  const offChanged = bridge ? bridge.jobs.onChanged((list) => {
+    if (disposed) return;
+    activeJobs = Array.isArray(list) ? list : [];
+    if (!running) updateSummary();
   }) : () => {};
 
   /* ---------------- UI ---------------- */
 
   $('#exp-body').addEventListener('change', (event) => {
     const checkbox = event.target.closest('[data-select]');
-    if (!checkbox) return;
+    if (!checkbox || checkbox.disabled) return;
     setSelected(checkbox.dataset.select, checkbox.checked);
     renderTable();
   });
 
   $('#exp-select-all').addEventListener('change', (event) => {
-    selectMany(getState().models.map((model) => model.id), event.target.checked);
+    selectMany(getState().models.filter((model) => model.exportable).map((model) => model.id), event.target.checked);
     renderTable();
   });
 
@@ -321,17 +395,17 @@ export function mount(container) {
     }
   });
 
-  $('#exp-template').addEventListener('input', debounce(updatePreview, 120));
+  $('#exp-template').addEventListener('input', debounce(templatePreview, 120));
   container.querySelectorAll('[data-token]').forEach((button) => {
     button.addEventListener('click', () => {
       const input = $('#exp-template');
       const token = button.dataset.token;
-      const start = input.selectionStart || input.value.length;
-      const end = input.selectionEnd || input.value.length;
-      input.value = input.value.slice(0, start) + token + input.value.slice(end);
+      const startPos = input.selectionStart || input.value.length;
+      const endPos = input.selectionEnd || input.value.length;
+      input.value = input.value.slice(0, startPos) + token + input.value.slice(endPos);
       input.focus();
-      input.setSelectionRange(start + token.length, start + token.length);
-      updatePreview();
+      input.setSelectionRange(startPos + token.length, startPos + token.length);
+      templatePreview();
     });
   });
 
@@ -339,7 +413,7 @@ export function mount(container) {
   $('#exp-cancel').addEventListener('click', async () => {
     if (!jobId) return;
     try {
-      await call(bridge.transfer.cancelExport, jobId);
+      await call(bridge.jobs.cancel, jobId);
       $('#exp-status').textContent = 'Cancelando…';
     } catch (error) {
       toast.error('No se pudo cancelar', error.message);
@@ -359,15 +433,15 @@ export function mount(container) {
   });
 
   renderTable();
-  updatePreview();
+  templatePreview();
   lastModels = getState().models;
+  refreshJobs({ adopt: true });
 
   return () => {
     disposed = true;
     unsubscribe();
     offProgress();
-    offResult();
-    offError();
-    offCancelled();
+    offFinished();
+    offChanged();
   };
 }

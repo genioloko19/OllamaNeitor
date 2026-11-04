@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Tag del release'
         required: true
-        default: 'v0.1.0-alpha.0'
+        default: 'v1.0.0'
   push:
     tags:
       - 'v*'
@@ -33,7 +33,7 @@ jobs:
         run: npm ci
 
       - name: Tests
-        run: npm test
+        run: npm run verify
 
       - name: Build Windows installer and portable
         run: npm run build:win
@@ -51,9 +51,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: OllamaNeitor 0.1.0 Alpha
-          prerelease: true
+          name: OllamaNeitor 1.0.0
+          prerelease: false
           overwrite_files: true
+          make_latest: true
           files: |
             dist/OllamaNeitor-*-x64.exe
             dist/OllamaNeitor-*-portable.exe

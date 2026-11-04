@@ -1,8 +1,7 @@
-/** Vista Importar: escaneo de paquetes, validación y commit con progreso. */
+/** Vista Importar: escaneo, conflictos, trabajos reenganchables y commit transaccional. */
 
-import { getState } from '../store.js';
 import { bridge, call } from '../ipc.js';
-import { refreshModels, refreshStatus, refreshAchievements } from '../services.js';
+import { refreshModels, refreshStatus, refreshAchievements, listJobs } from '../services.js';
 import { fmtBytes, escapeHtml } from '../lib/format.js';
 import { toast } from '../lib/toast.js';
 import { alert, errorDialog } from '../lib/swal.js';
@@ -13,13 +12,14 @@ export function mount(container) {
   let selected = new Set();
   let jobId = null;
   let running = false;
+  let activeJobs = [];
 
   container.innerHTML = `
     <div class="view-inner">
       <header class="page-head">
         <div>
           <h1><i class="fa-solid fa-file-import"></i> Importar paquetes</h1>
-          <p class="page-sub">Extrae en staging, valida rutas y digests, y confirma los modelos de forma atómica.</p>
+          <p class="page-sub">Extrae en staging, valida rutas y digests, y confirma cada modelo de forma atómica.</p>
         </div>
         <div class="page-actions">
           <button class="btn btn-ghost btn-sm" id="imp-files"><i class="fa-solid fa-file-arrow-up"></i> Añadir .tar</button>
@@ -35,13 +35,13 @@ export function mount(container) {
               <button id="imp-browse" class="btn btn-sm"><i class="fa-solid fa-folder-open"></i> Examinar</button>
               <button id="imp-scan" class="btn btn-sm btn-primary"><i class="fa-solid fa-magnifying-glass"></i> Escanear</button>
             </div>
-            <small>El escaneo lee el índice del tar sin extraerlo: detecta modelos, tamaños y entradas inseguras.</small>
+            <small>El escaneo lee el índice del tar sin extraerlo: detecta modelos, tamaños, conflictos y entradas inseguras.</small>
           </div>
 
           <div class="field">
             <label for="imp-conflict">Si el modelo ya existe</label>
             <select id="imp-conflict" class="select">
-              <option value="overwrite">Sobrescribir</option>
+              <option value="overwrite">Sobrescribir (con backup)</option>
               <option value="rename">Importar con otro tag</option>
               <option value="skip">Omitir</option>
             </select>
@@ -62,8 +62,9 @@ export function mount(container) {
         <span class="pill pill-accent" id="imp-count">0 paquete(s)</span>
         <span class="pill" id="imp-size">0 B</span>
         <span class="pill" id="imp-models">0 modelo(s)</span>
+        <span class="pill" id="imp-conflicts">0 conflictos</span>
         <span class="grow"></span>
-        <label class="switch"><input type="checkbox" id="imp-select-all" /><span class="track"></span> Seleccionar válidos</label>
+        <span class="tiny soft" id="imp-active"></span>
       </div>
 
       <div class="table-wrap" style="max-height:min(46vh,460px)">
@@ -105,6 +106,16 @@ export function mount(container) {
     return packages.filter((pkg) => pkg.valid && pkg.models && pkg.models.length);
   }
 
+  function activeImport() {
+    return activeJobs.find((job) => job.type === 'import' && ['queued', 'running', 'cancelling'].includes(job.status));
+  }
+
+  function conflictCount() {
+    return packages
+      .filter((pkg) => selected.has(pkg.file))
+      .reduce((sum, pkg) => sum + (pkg.models || []).filter((model) => model.conflict === 'different').length, 0);
+  }
+
   function updateSummary() {
     const count = selected.size;
     const bytes = packages
@@ -116,19 +127,34 @@ export function mount(container) {
     $('#imp-count').textContent = `${count} paquete(s)`;
     $('#imp-size').textContent = fmtBytes(bytes);
     $('#imp-models').textContent = `${models} modelo(s)`;
-    $('#imp-start').disabled = running || count === 0;
+    $('#imp-conflicts').textContent = `${conflictCount()} conflicto(s)`;
+    $('#imp-active').textContent = activeImport() ? 'Importación activa' : '';
+    $('#imp-start').disabled = running || Boolean(activeImport()) || count === 0;
     const valid = validPackages();
     const all = valid.length > 0 && valid.every((pkg) => selected.has(pkg.file));
     $('#imp-all').checked = all;
     $('#imp-all').indeterminate = !all && valid.some((pkg) => selected.has(pkg.file));
-    $('#imp-select-all').checked = all;
   }
 
   function statusBadge(pkg) {
     if (pkg.error) return `<span class="pill pill-danger" title="${escapeHtml(pkg.error)}"><i class="fa-solid fa-circle-xmark"></i> Error</span>`;
-    if (pkg.unsafe && pkg.unsafe.length) return `<span class="pill pill-danger"><i class="fa-solid fa-shield-halved"></i> Ruta insegura</span>`;
+    if (pkg.unsafe && pkg.unsafe.length) return `<span class="pill pill-danger" title="${escapeHtml(pkg.unsafe.map((entry) => `${entry.path}: ${entry.reason}`).join('; '))}"><i class="fa-solid fa-shield-halved"></i> Ruta insegura</span>`;
     if (!pkg.models || !pkg.models.length) return '<span class="pill pill-warning"><i class="fa-solid fa-triangle-exclamation"></i> Sin modelos</span>';
+    const conflicts = pkg.models.filter((model) => model.conflict === 'different').length;
+    if (conflicts) return `<span class="pill pill-warning"><i class="fa-solid fa-code-compare"></i> ${conflicts} existente(s)</span>`;
     return '<span class="pill pill-success"><i class="fa-solid fa-circle-check"></i> Válido</span>';
+  }
+
+  function modelSummary(pkg) {
+    const models = pkg.models || [];
+    if (!models.length) return '<span class="soft">—</span>';
+    const visible = models.slice(0, 3).map((model) => {
+      const suffix = model.conflict === 'different' ? ' *' : '';
+      return `${escapeHtml(model.name)}:${escapeHtml(model.tag)}${suffix}`;
+    }).join(', ');
+    const extra = models.length > 3 ? ` +${models.length - 3}` : '';
+    const conflictHint = models.some((model) => model.conflict === 'different') ? '<div class="tiny soft">* ya existe con otro contenido</div>' : '';
+    return `${visible}${extra}${conflictHint}`;
   }
 
   function render() {
@@ -138,20 +164,15 @@ export function mount(container) {
       updateSummary();
       return;
     }
-
     body.innerHTML = packages.map((pkg) => {
       const isSelected = selected.has(pkg.file);
-      const models = pkg.models || [];
-      const modelText = models.length
-        ? models.slice(0, 3).map((model) => `${escapeHtml(model.name)}:${escapeHtml(model.tag)}`).join(', ') + (models.length > 3 ? ` +${models.length - 3}` : '')
-        : '<span class="soft">—</span>';
       return `
         <tr class="${isSelected ? 'selected' : ''}">
           <td class="check">
             <input type="checkbox" class="check" data-select="${escapeHtml(pkg.file)}" ${isSelected ? 'checked' : ''} ${pkg.valid ? '' : 'disabled'} />
           </td>
           <td><strong>${escapeHtml(pkg.fileName || pkg.file)}</strong></td>
-          <td class="tiny">${modelText}</td>
+          <td class="tiny">${modelSummary(pkg)}</td>
           <td class="nowrap">${escapeHtml(pkg.tarLabel || fmtBytes(pkg.tarBytes))}</td>
           <td>${statusBadge(pkg)}</td>
           <td class="tiny muted truncate" style="max-width:300px" title="${escapeHtml(pkg.file)}">${escapeHtml(pkg.file)}</td>
@@ -214,6 +235,7 @@ export function mount(container) {
           });
         }
       }
+      if (disposed) return;
       render();
       $('#imp-status').textContent = `${packages.length} paquete(s) en la lista.`;
     } catch (error) {
@@ -223,7 +245,10 @@ export function mount(container) {
 
   async function start() {
     if (running || !selected.size) return;
-    const files = [...selected];
+    if (activeImport()) {
+      toast.warning('Importación en curso', 'Espera a que termine la operación actual.');
+      return;
+    }
     running = true;
     jobId = null;
     $('#imp-start').disabled = true;
@@ -235,13 +260,14 @@ export function mount(container) {
 
     try {
       const result = await call(bridge.transfer.startImport, {
-        files,
+        files: [...selected],
         conflict: $('#imp-conflict').value,
         verify: $('#imp-verify').checked
       });
       jobId = result.jobId;
       if (disposed) return;
-      toast.info('Importación iniciada', `${result.taskCount} paquete(s) en cola.`);
+      toast.info(result.queued ? 'Importación en cola' : 'Importación iniciada', `${result.taskCount} paquete(s).`);
+      setTimeout(() => refreshJobs({ adopt: true }), 150);
     } catch (error) {
       running = false;
       if (disposed) return;
@@ -251,93 +277,122 @@ export function mount(container) {
     }
   }
 
-  function finish() {
-    running = false;
-    jobId = null;
-    $('#imp-start').disabled = false;
-    $('#imp-cancel').classList.add('hidden');
-  }
-
-  /* ---------------- Eventos IPC ---------------- */
-
-  const offProgress = bridge ? bridge.transfer.onProgress((event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    const percent = Number(event.percent) || 0;
+  function applyProgress(progress) {
+    if (!progress) return;
+    const percent = Number(progress.percent) || 0;
     $('#imp-bar').style.width = `${percent}%`;
     $('#imp-percent').textContent = `${percent} %`;
-    if (event.type === 'task-done') {
-      const id = event.result?.model?.id;
-      $('#imp-status').textContent = id ? `Importado ${id}` : 'Paquete procesado.';
-      return;
-    }
-    if (event.type === 'task-error') {
-      $('#imp-status').textContent = `Error en ${event.result?.fileName || 'paquete'}`;
-      return;
-    }
-    const phaseLabel = event.phase === 'extract' ? 'Extrayendo' : event.phase === 'verify' ? 'Verificando' : 'Confirmando';
-    $('#imp-status').textContent = `${phaseLabel} ${event.taskIndex}/${event.taskCount}`;
-    $('#imp-file').textContent = event.file || '';
-  }) : () => {};
+    const phase = progress.phase === 'extract' ? 'Extrayendo'
+      : progress.phase === 'verify' ? 'Verificando'
+        : progress.phase === 'commit' ? 'Confirmando' : 'Procesando';
+    $('#imp-status').textContent = `${phase}${progress.taskIndex ? ` ${progress.taskIndex}/${progress.taskCount}` : ''}`;
+    $('#imp-file').textContent = progress.file || '';
+    if (progress.model) $('#imp-file').textContent = `${progress.model.name || ''}:${progress.model.tag || ''}`;
+  }
 
-  const offResult = bridge ? bridge.transfer.onResult(async (event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    const results = Array.isArray(event.results) ? event.results : [];
+  async function refreshJobs({ adopt = false } = {}) {
+    try {
+      const list = await listJobs();
+      activeJobs = Array.isArray(list) ? list : [];
+      if (adopt) {
+        const active = activeImport();
+        if (active && !running) {
+          jobId = active.id;
+          running = true;
+          $('#imp-start').disabled = true;
+          $('#imp-cancel').classList.remove('hidden');
+          $('#imp-status').textContent = active.status === 'queued' ? 'En cola…' : 'Recuperando progreso…';
+          if (active.progress) applyProgress(active.progress);
+        }
+        if (!active && !running) {
+          const last = activeJobs.find((job) => job.type === 'import' && ['done', 'partial', 'error', 'cancelled'].includes(job.status));
+          if (last) $('#imp-status').textContent = `Última importación: ${last.status}`;
+        }
+      }
+      updateSummary();
+    } catch { /* ignore */ }
+  }
+
+  function finish(job) {
+    if (!job) return;
+    running = false;
+    jobId = null;
+    $('#imp-cancel').classList.add('hidden');
+    refreshJobs();
+    const results = job.result && Array.isArray(job.result.results) ? job.result.results : [];
     const ok = results.filter((result) => result.ok && !result.skipped);
     const skipped = results.filter((result) => result.skipped);
     const failed = results.filter((result) => !result.ok);
     const bytes = ok.reduce((sum, result) => sum + (result.bytes || 0), 0);
+
+    if (job.status === 'cancelled') {
+      $('#imp-status').textContent = 'Importación cancelada.';
+      toast.warning('Importación cancelada');
+      return;
+    }
+    if (job.status === 'error') {
+      $('#imp-status').textContent = 'Error en la importación.';
+      toast.error('Importación fallida', job.error && job.error.message ? job.error.message : 'Error desconocido');
+      return;
+    }
+
     $('#imp-bar').style.width = '100%';
     $('#imp-percent').textContent = '100 %';
     $('#imp-status').textContent = `Completado · ${ok.length} importado(s)`;
-    finish();
-    await Promise.all([refreshModels(), refreshStatus(), refreshAchievements()]);
+    Promise.all([refreshModels(), refreshStatus(), refreshAchievements()]).catch(() => {});
     if (ok.length) {
-      const { celebrate } = await import('../lib/confetti.js');
-      celebrate();
+      import('../lib/confetti.js').then(({ celebrate }) => celebrate()).catch(() => {});
     }
-    await alert({
+    alert({
       title: failed.length ? 'Importación con incidencias' : 'Importación completada',
       icon: failed.length ? 'warning' : 'success',
       html: `
         <div style="text-align:left">
           <p><strong>${ok.length}</strong> importado(s) · <strong>${skipped.length}</strong> omitido(s) · <strong>${failed.length}</strong> fallido(s)</p>
           <p style="margin-top:6px">${fmtBytes(bytes)} incorporados a la biblioteca.</p>
-          ${failed.length ? `<ul style="margin-top:8px;padding-left:18px;font-size:11px">${failed.map((result) => `<li>${escapeHtml(result.fileName || result.file || 'paquete')}: ${escapeHtml(result.error?.message || 'error')}</li>`).join('')}</ul>` : ''}
+          <p class="tiny" style="margin-top:6px">La atomicidad es por modelo: los modelos correctos se conservan aunque otro falle.</p>
+          ${failed.length ? `<ul style="margin-top:8px;padding-left:18px;font-size:11px">${failed.map((result) => `<li>${escapeHtml(result.fileName || result.file || 'paquete')}${result.model ? ` · ${escapeHtml(result.model.name)}:${escapeHtml(result.model.tag)}` : ''}: ${escapeHtml(result.error?.message || 'error')}</li>`).join('')}</ul>` : ''}
         </div>
       `
     });
+  }
+
+  /* ---------------- Eventos de trabajos ---------------- */
+
+  const offProgress = bridge ? bridge.jobs.onProgress((progress) => {
+    if (disposed) return;
+    if (jobId && progress.jobId !== jobId) return;
+    if (!jobId && progress.type === 'import') {
+      jobId = progress.jobId;
+      running = true;
+      $('#imp-cancel').classList.remove('hidden');
+    }
+    if (progress.type === 'import') applyProgress(progress);
   }) : () => {};
 
-  const offError = bridge ? bridge.transfer.onError((event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    finish();
-    toast.error('Importación fallida', event.error?.message || 'Error desconocido');
+  const offFinished = bridge ? bridge.jobs.onFinished((job) => {
+    if (disposed || !job || job.type !== 'import') return;
+    if (jobId && job.id !== jobId) return;
+    finish(job);
   }) : () => {};
 
-  const offCancelled = bridge ? bridge.transfer.onCancelled((event) => {
-    if (disposed || !jobId || event.jobId !== jobId) return;
-    finish();
-    toast.warning('Importación cancelada');
+  const offChanged = bridge ? bridge.jobs.onChanged((list) => {
+    if (disposed) return;
+    activeJobs = Array.isArray(list) ? list : [];
+    if (!running) updateSummary();
   }) : () => {};
 
   /* ---------------- UI ---------------- */
 
   $('#imp-body').addEventListener('change', (event) => {
     const checkbox = event.target.closest('[data-select]');
-    if (!checkbox) return;
+    if (!checkbox || checkbox.disabled) return;
     if (checkbox.checked) selected.add(checkbox.dataset.select);
     else selected.delete(checkbox.dataset.select);
     render();
   });
 
   $('#imp-all').addEventListener('change', (event) => {
-    const valid = validPackages();
-    if (event.target.checked) valid.forEach((pkg) => selected.add(pkg.file));
-    else valid.forEach((pkg) => selected.delete(pkg.file));
-    render();
-  });
-
-  $('#imp-select-all').addEventListener('change', (event) => {
     const valid = validPackages();
     if (event.target.checked) valid.forEach((pkg) => selected.add(pkg.file));
     else valid.forEach((pkg) => selected.delete(pkg.file));
@@ -362,7 +417,7 @@ export function mount(container) {
   $('#imp-cancel').addEventListener('click', async () => {
     if (!jobId) return;
     try {
-      await call(bridge.transfer.cancelImport, jobId);
+      await call(bridge.jobs.cancel, jobId);
       $('#imp-status').textContent = 'Cancelando…';
     } catch (error) {
       toast.error('No se pudo cancelar', error.message);
@@ -370,12 +425,12 @@ export function mount(container) {
   });
 
   render();
+  refreshJobs({ adopt: true });
 
   return () => {
     disposed = true;
     offProgress();
-    offResult();
-    offError();
-    offCancelled();
+    offFinished();
+    offChanged();
   };
 }

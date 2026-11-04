@@ -1,4 +1,4 @@
-# Manual de OllamaNeitor 0.1.0 Alpha
+# Manual de OllamaNeitor 1.0.0
 
 Guía completa de instalación, uso y resolución de problemas.
 
@@ -25,7 +25,7 @@ Guía completa de instalación, uso y resolución de problemas.
 15. [Solución de problemas](#solución-de-problemas)
 16. [Desinstalación](#desinstalación)
 17. [Seguridad](#seguridad)
-18. [Limitaciones de la alfa](#limitaciones-de-la-alfa)
+18. [Limitaciones conocidas](#limitaciones-conocidas)
 
 ---
 
@@ -64,18 +64,18 @@ El inventario local funciona **sin Ollama en ejecución**, leyendo directamente 
 
 ### Opción A — Instalador
 
-1. Descarga `OllamaNeitor-0.1.0-alpha.0-x64.exe` desde [Releases](https://github.com/genioloko19/OllamaNeitor/releases).
+1. Descarga `OllamaNeitor-1.0.0-x64.exe` desde [Releases](https://github.com/genioloko19/OllamaNeitor/releases).
 2. Ejecuta el instalador.
 3. Elige la carpeta de instalación y confirma.
 4. Abre OllamaNeitor desde el menú Inicio o el acceso directo del escritorio.
 
 ### Opción B — Portable
 
-1. Descarga `OllamaNeitor-0.1.0-alpha.0-portable.exe`.
+1. Descarga `OllamaNeitor-1.0.0-portable.exe`.
 2. Colócalo en la carpeta que quieras.
 3. Ejecútalo directamente, sin instalación.
 
-> En la alfa 0.1 el ejecutable portable usa los mismos datos en `%APPDATA%` que la versión instalada. La separación de datos junto al `.exe` está planificada para la versión 1.0.
+> El portable guarda sus datos en `OllamaNeitorData` junto al `.exe`. Si la carpeta no es escribible, cae a `%APPDATA%` y lo registra en el log.
 
 ### SmartScreen
 
@@ -89,7 +89,7 @@ El ejecutable no está firmado. Si Windows muestra "Windows protegió tu PC":
 Descarga `SHA256SUMS.txt` del mismo release y compara:
 
 ```powershell
-Get-FileHash .\OllamaNeitor-0.1.0-alpha.0-x64.exe -Algorithm SHA256
+Get-FileHash .\OllamaNeitor-1.0.0-x64.exe -Algorithm SHA256
 ```
 
 El resultado debe coincidir con la línea correspondiente de `SHA256SUMS.txt`.
@@ -229,9 +229,9 @@ Antes de empezar se comprueba que haya espacio suficiente (tamaño de los modelo
 5. Activa o desactiva la verificación SHA-256.
 6. Pulsa **Importar seleccionados**.
 
-Los paquetes con rutas absolutas, `..`, unidades `C:`, enlaces simbólicos o entradas ajenas a `manifests/`, `blobs/` y `neitor.json` se marcan como inválidos y no se procesan.
+Los paquetes con rutas absolutas, `..`, unidades `C:`, enlaces simbólicos, hardlinks o entradas ajenas a `manifests/`, `blobs/` y `neitor.json` se marcan como inválidos y no se procesan.
 
-> En la alfa 0.1 la importación escribe directamente en el destino. Para la 1.0 se sustituirá por staging + renombrado atómico y rollback por modelo. Evita cerrar la aplicación durante una importación.
+La importación es **atómica por modelo**: cada manifiesto se copia primero a `.part-<uuid>`, se verifica y se renombra. Si un modelo falla, solo se revierte ese modelo; los ya confirmados permanecen. En sobrescritura se guarda un backup temporal del manifiesto anterior y se restaura si algo falla.
 
 ---
 
@@ -297,7 +297,7 @@ El modo se cambia desde el **encabezado**; el tema se elige en esta pestaña.
 - Manifiestos analizados.
 - Lista de huérfanos.
 
-En la alfa 0.1 la limpieza es solo informativa; no se borra nada automáticamente.
+En la versión 1.0 la limpieza de huérfanos es destructiva y está protegida por confirmación: solo borra blobs que ningún manifiesto referencia.
 
 ### Avanzado
 
@@ -368,7 +368,7 @@ El XP se guarda en `achievements.json`. Puedes reiniciarlo desde **Panel de cont
 
 ## Datos y copias de seguridad
 
-Todo se guarda en:
+La versión instalada guarda todo en:
 
 ```
 %APPDATA%\Neitor\OllamaNeitor\
@@ -379,6 +379,10 @@ Todo se guarda en:
 ├─ logs\
 └─ temp\
 ```
+
+La versión portable guarda lo mismo en `OllamaNeitorData\` junto al ejecutable.
+Si esa carpeta no es escribible, usa `%APPDATA%\Neitor\OllamaNeitor` y lo registra
+en el log.
 
 | Archivo | Contenido |
 |---|---|
@@ -511,15 +515,14 @@ Para reportar una vulnerabilidad, abre un issue privado o contacta al mantenedor
 
 ---
 
-## Limitaciones de la alfa
+## Limitaciones conocidas
 
 - Sin firma de código ni actualizador automático.
-- La limpieza de blobs huérfanos es solo informativa.
-- El acrílico nativo depende de Windows 11 y del driver.
+- El acrílico nativo depende de Windows 11 y del driver; si falla, se usa el glass CSS.
 - El formato `.tar` es propio de OllamaNeitor (manifiestos + blobs).
-- La importación de la 0.1 no es totalmente atómica; la 1.0 introducirá staging y rollback por modelo.
-- El portable comparte datos con la versión instalada; la 1.0 permitirá datos junto al `.exe`.
+- `asar` está desactivado para que los workers carguen `tar` desde disco.
 - Sin i18n: la interfaz está en español.
+- Backup/restore integrado, bandeja del sistema, compresión `.tar.gz`/`.zst`, reanudación, operaciones avanzadas de modelo e imágenes en chat quedan para 1.1.
 
 ---
 

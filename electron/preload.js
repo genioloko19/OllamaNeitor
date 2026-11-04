@@ -26,8 +26,19 @@ const api = {
     list: () => ipcRenderer.invoke('models:list'),
     delete: (id) => ipcRenderer.invoke('models:delete', id),
     blobStats: () => ipcRenderer.invoke('models:blobStats'),
+    deleteOrphans: (payload) => ipcRenderer.invoke('models:deleteOrphans', payload),
+    verify: (id) => ipcRenderer.invoke('models:verify', id),
     show: (id) => ipcRenderer.invoke('models:show', id),
     details: (id) => ipcRenderer.invoke('models:details', id)
+  },
+  jobs: {
+    list: (payload) => ipcRenderer.invoke('jobs:list', payload),
+    get: (id) => ipcRenderer.invoke('jobs:get', id),
+    cancel: (id) => ipcRenderer.invoke('jobs:cancel', id),
+    clearHistory: () => ipcRenderer.invoke('jobs:clearHistory'),
+    onChanged: (callback) => subscribe('jobs:changed', callback),
+    onProgress: (callback) => subscribe('jobs:progress', callback),
+    onFinished: (callback) => subscribe('jobs:finished', callback)
   },
   transfer: {
     startExport: (payload) => ipcRenderer.invoke('export:start', payload),
@@ -42,7 +53,7 @@ const api = {
     onCancelled: (callback) => subscribe('transfer:cancelled', callback)
   },
   ollama: {
-    status: () => ipcRenderer.invoke('ollama:status'),
+    status: (options) => ipcRenderer.invoke('ollama:status', options || {}),
     ps: () => ipcRenderer.invoke('ollama:ps'),
     unload: (id) => ipcRenderer.invoke('ollama:unload', id),
     pull: (model) => ipcRenderer.invoke('ollama:pull', model),

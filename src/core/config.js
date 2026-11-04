@@ -28,7 +28,10 @@ const DEFAULTS = {
     temperature: 0.7,
     num_ctx: 4096,
     top_p: 0.9,
-    maxHistory: 40
+    numPredict: -1,
+    maxHistory: 40,
+    keepAlive: '5m',
+    systemPrompt: ''
   },
   ui: {
     performanceMode: false,

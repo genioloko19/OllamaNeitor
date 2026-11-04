@@ -43,6 +43,7 @@ const viewRoot = document.getElementById('view-root');
 let currentCleanup = null;
 let currentRoute = null;
 let lastLevel = 1;
+let levelInitialized = false;
 
 /* ============================================================
    Cabecera y estado
@@ -82,7 +83,7 @@ function updateHeader() {
   document.getElementById('disk-mini-total').textContent = fmtBytes(state.summary.diskBytes || 0);
   document.getElementById('disk-mini-sub').textContent = `${state.summary.count || 0} modelos en inventario`;
 
-  document.getElementById('brand-version').textContent = `alfa v${state.version.split('.').slice(0, 2).join('.')}`;
+  document.getElementById('brand-version').textContent = `v${state.version}`;
   document.getElementById('status-text').innerHTML = `${state.models.length} modelo(s) · ${fmtBytes(state.summary.diskBytes || 0)} en disco · ${state.ollama.online ? 'API conectada' : 'modo local'}`;
 
   const appearance = state.appearance || getAppearance();
@@ -93,7 +94,10 @@ function updateHeader() {
 
   if (state.achievements && state.achievements.level) {
     const levelNumber = state.achievements.level.level;
-    if (levelNumber > lastLevel) {
+    if (!levelInitialized) {
+      lastLevel = levelNumber;
+      levelInitialized = true;
+    } else if (levelNumber > lastLevel) {
       playLevelUp();
       if (!getState().config?.ui?.performanceMode) celebrate();
     }

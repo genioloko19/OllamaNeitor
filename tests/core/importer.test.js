@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import * as tarModule from 'tar';
 import importer from '../../src/core/importer.js';
 
@@ -28,11 +29,18 @@ function makePackage() {
 
   fs.writeFileSync(path.join(blobs, 'sha256-config'), JSON.stringify({ model_format: 'gguf', model_family: 'demo' }));
   fs.writeFileSync(path.join(blobs, 'sha256-layer'), Buffer.alloc(100, 7));
+  const configBuffer = fs.readFileSync(path.join(blobs, 'sha256-config'));
+  const layerBuffer = fs.readFileSync(path.join(blobs, 'sha256-layer'));
+  const hash = (buffer) => `sha256:${crypto.createHash('sha256').update(buffer).digest('hex')}`;
+  const configDigest = hash(configBuffer);
+  const layerDigest = hash(layerBuffer);
+  fs.renameSync(path.join(blobs, 'sha256-config'), path.join(blobs, configDigest.replace(':', '-')));
+  fs.renameSync(path.join(blobs, 'sha256-layer'), path.join(blobs, layerDigest.replace(':', '-')));
   fs.writeFileSync(path.join(manifests, 'latest'), JSON.stringify({
     schemaVersion: 2,
-    config: { digest: 'sha256:config', size: 40, mediaType: 'application/vnd.docker.container.image.v1+json' },
+    config: { digest: configDigest, size: configBuffer.length, mediaType: 'application/vnd.docker.container.image.v1+json' },
     layers: [
-      { digest: 'sha256:layer', size: 100, mediaType: 'application/vnd.ollama.image.model' }
+      { digest: layerDigest, size: layerBuffer.length, mediaType: 'application/vnd.ollama.image.model' }
     ]
   }));
 
@@ -68,7 +76,8 @@ describe('importer', () => {
     expect(model.name).toBe('demo');
     expect(model.tag).toBe('latest');
     expect(model.sizeBytes).toBeGreaterThanOrEqual(100);
-    expect(model.digests).toEqual(['sha256:config', 'sha256:layer']);
+    expect(model.digests).toHaveLength(2);
+    expect(model.digests[0]).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
   it('marca paquetes con entradas ajenas como inválidos', async () => {
@@ -81,6 +90,6 @@ describe('importer', () => {
 
     const result = await importer.scanTar(tarPath);
     expect(result.valid).toBe(false);
-    expect(result.unsafe).toContain('evil.txt');
+    expect(result.unsafe.some((entry) => entry.path === 'evil.txt')).toBe(true);
   });
 });

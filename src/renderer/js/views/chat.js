@@ -6,7 +6,7 @@ import { refreshAchievements } from '../services.js';
 import { escapeHtml, fmtTime } from '../lib/format.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { toast } from '../lib/toast.js';
-import { confirm, errorDialog } from '../lib/swal.js';
+import { confirm, errorDialog, prompt as promptDialog } from '../lib/swal.js';
 
 const MODEL_KEY = 'neitor.chat.model';
 
@@ -60,6 +60,7 @@ export function mount(container) {
             </select>
             <span class="grow"></span>
             <span class="pill" id="chat-state">listo</span>
+            <button class="btn btn-sm btn-ghost hidden" id="chat-rename"><i class="fa-solid fa-pen"></i> Renombrar</button>
             <button class="btn btn-sm btn-danger hidden" id="chat-stop"><i class="fa-solid fa-stop"></i> Detener</button>
           </div>
 
@@ -182,6 +183,7 @@ export function mount(container) {
       renderMessages();
       renderConversations();
       $('#chat-state').textContent = `${messages.length} mensajes`;
+      $('#chat-rename').classList.remove('hidden');
       $('#chat-input').focus();
     } catch (error) {
       toast.error('No se pudo abrir la conversación', error.message);
@@ -199,6 +201,7 @@ export function mount(container) {
     assistantNode = null;
     assistantBody = null;
     $('#chat-state').textContent = 'listo';
+    $('#chat-rename').classList.add('hidden');
     renderMessages();
     renderConversations();
     $('#chat-input').focus();
@@ -253,7 +256,17 @@ export function mount(container) {
     try {
       const started = await call(bridge.chat.send, {
         model,
-        messages: messages.filter((message) => message.content || message.role === 'user')
+        messages: (() => {
+          const chatConfig = getState().config?.chat || {};
+          const maxHistory = Math.max(2, Number(chatConfig.maxHistory) || 40);
+          const recent = messages
+            .filter((message) => message.role === 'user' || message.content)
+            .slice(-maxHistory);
+          if (chatConfig.systemPrompt && chatConfig.systemPrompt.trim()) {
+            return [{ role: 'system', content: chatConfig.systemPrompt.trim() }, ...recent];
+          }
+          return recent;
+        })()
       });
       streamId = started.streamId;
     } catch (error) {
@@ -345,6 +358,32 @@ export function mount(container) {
 
   $('#chat-new').addEventListener('click', newConversation);
   $('#conv-search').addEventListener('input', renderConversations);
+
+  $('#chat-rename').addEventListener('click', async () => {
+    if (!currentId) return;
+    const current = conversations.find((conv) => conv.id === currentId);
+    const title = await promptDialog({
+      title: 'Renombrar conversación',
+      inputValue: current ? current.title : '',
+      placeholder: 'Nuevo título',
+      confirmText: 'Guardar',
+      validator: (value) => (String(value || '').trim() ? undefined : 'El título no puede estar vacío')
+    });
+    if (title === null) return;
+    try {
+      const saved = await call(bridge.chat.save, {
+        id: currentId,
+        title: String(title).trim().slice(0, 80),
+        model: modelSelect.value,
+        messages
+      });
+      currentId = saved.id;
+      await loadConversations();
+      toast.success('Conversación renombrada');
+    } catch (error) {
+      toast.error('No se pudo renombrar', error.message);
+    }
+  });
 
   $('#conv-list').addEventListener('click', async (event) => {
     const del = event.target.closest('[data-del-conv]');

@@ -8,28 +8,15 @@ const { randomUUID } = require('node:crypto');
 const jobs = require('./jobs');
 const logger = require('./logger');
 const { fail, serialize } = require('./errors');
-const { inspectBasePath, ensureDir } = require('./paths');
-const { readManifest, digestToBlobName, digestsOf, formatBytes, identityFromManifestPath } = require('./manifest');
+const { inspectBasePath, ensureDir, assertInside } = require('./paths');
+const { readManifest, digestToBlobName, digestsOf, formatBytes } = require('./manifest');
+const { validateEntry, isSafeEntry, normalizeEntryPath } = require('./tar-safety');
 
 const WORKER = path.join(__dirname, '..', '..', 'electron', 'workers', 'import.worker.js');
-
-function normalizeEntryPath(value) {
-  return String(value || '').replace(/\\/g, '/');
-}
-
-function isSafeEntry(entryPath) {
-  const normalized = normalizeEntryPath(entryPath);
-  if (!normalized || normalized.startsWith('/')) return false;
-  if (/^[a-zA-Z]:/.test(normalized)) return false;
-  const parts = normalized.split('/').filter(Boolean);
-  if (parts.includes('..')) return false;
-  return normalized.startsWith('manifests/') || normalized.startsWith('blobs/') || normalized === 'neitor.json';
-}
 
 function identityFromTarPath(entryPath) {
   const normalized = normalizeEntryPath(entryPath);
   const rel = normalized.split('/').filter(Boolean);
-  // ["manifests", "<registry>", ..., "<modelo>", "<tag>"]
   const withoutRoot = rel.slice(1);
   if (withoutRoot.length < 2) return { name: withoutRoot.join('/') || 'desconocido', tag: 'latest', rel: withoutRoot };
   const tag = withoutRoot[withoutRoot.length - 1];
@@ -42,11 +29,38 @@ function identityFromTarPath(entryPath) {
   return { name, tag, rel: withoutRoot };
 }
 
+function manifestSignature(manifest) {
+  const config = manifest && manifest.config ? manifest.config.digest : '';
+  const layers = (manifest && Array.isArray(manifest.layers) ? manifest.layers : [])
+    .map((layer) => layer.digest)
+    .filter(Boolean);
+  return JSON.stringify({ config, layers });
+}
+
+function conflictFor(basePath, rel, signature) {
+  if (!basePath) return 'unknown';
+  const base = inspectBasePath(basePath);
+  if (!base.hasManifests) return 'unknown';
+  const target = path.join(base.manifests, ...rel);
+  try {
+    assertInside(base.manifests, target, 'manifiesto');
+  } catch {
+    return 'invalid';
+  }
+  if (!fs.existsSync(target)) return 'new';
+  try {
+    const existing = readManifest(target);
+    return manifestSignature(existing) === signature ? 'same' : 'different';
+  } catch {
+    return 'different';
+  }
+}
+
 /**
- * Inspecciona un tar sin extraerlo por completo: localiza manifiestos,
- * calcula tamaños y detecta entradas inseguras.
+ * Inspecciona un tar sin extraerlo: localiza manifiestos, calcula tamaños,
+ * detecta entradas inseguras y, si se indica basePath, previsualiza conflictos.
  */
-async function scanTar(file) {
+async function scanTar(file, { basePath = null } = {}) {
   if (!fs.existsSync(file)) fail('E_PATH_MISSING', `No existe el archivo ${file}`);
   const models = [];
   const blobSizes = new Map();
@@ -56,8 +70,9 @@ async function scanTar(file) {
     file,
     onentry: (entry) => {
       const entryPath = normalizeEntryPath(entry.path);
-      if (!isSafeEntry(entryPath)) {
-        unsafe.push(entryPath);
+      const check = validateEntry(entryPath, entry.type);
+      if (!check.ok) {
+        unsafe.push({ path: entryPath, reason: check.reason });
         entry.resume();
         return;
       }
@@ -71,9 +86,7 @@ async function scanTar(file) {
             const identity = identityFromTarPath(entryPath);
             const digests = digestsOf(manifest);
             let sizeBytes = 0;
-            for (const digest of digests) {
-              sizeBytes += blobSizes.get(digestToBlobName(digest)) || 0;
-            }
+            for (const digest of digests) sizeBytes += blobSizes.get(digestToBlobName(digest)) || 0;
             const layers = (manifest.layers || []).reduce((sum, layer) => sum + (Number(layer.size) || 0), 0);
             const configSize = manifest.config && manifest.config.size ? manifest.config.size : 0;
             models.push({
@@ -90,14 +103,15 @@ async function scanTar(file) {
               tarBytes: 0,
               family: '',
               parameterSize: '',
-              quantization: ''
+              quantization: '',
+              conflict: conflictFor(basePath, identity.rel, manifestSignature(manifest))
             });
           } catch (error) {
             logger.warn(`Manifiesto inválido dentro de ${path.basename(file)}`, { error: error.message });
           }
         });
       } else {
-        if (entryPath.startsWith('blobs/') && entry.size) {
+        if (entry.type === 'File' && entryPath.startsWith('blobs/') && entry.size) {
           blobSizes.set(path.posix.basename(entryPath), entry.size);
         }
         entry.resume();
@@ -105,7 +119,6 @@ async function scanTar(file) {
     }
   });
 
-  // Segunda pasada ligera para completar tamaños que dependen del orden de entradas.
   for (const model of models) {
     if (!model.sizeBytes) {
       model.sizeBytes = model.digests.reduce((sum, digest) => sum + (blobSizes.get(digestToBlobName(digest)) || 0), 0);
@@ -125,7 +138,7 @@ async function scanTar(file) {
   };
 }
 
-async function scanFolder(folder) {
+async function scanFolder(folder, options = {}) {
   if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) {
     fail('E_PATH_INVALID', `Carpeta no válida: ${folder}`);
   }
@@ -135,7 +148,7 @@ async function scanFolder(folder) {
   const packages = [];
   for (const file of files) {
     try {
-      packages.push(await scanTar(file));
+      packages.push(await scanTar(file, options));
     } catch (error) {
       packages.push({
         file,
@@ -152,7 +165,60 @@ async function scanFolder(folder) {
   return packages;
 }
 
-async function startImport({ basePath, files, conflict = 'ask', verify = true }) {
+function spawnImport(job, tasks, options) {
+  const worker = new Worker(WORKER, {
+    workerData: {
+      jobId: job.id,
+      mode: 'import',
+      tasks,
+      basePath: options.basePath,
+      manifestsRoot: options.manifestsRoot,
+      blobsRoot: options.blobsRoot,
+      conflict: options.conflict,
+      verify: options.verify
+    }
+  });
+
+  job.worker = worker;
+
+  worker.on('message', (message) => {
+    if (!message || !message.type) return;
+    if (message.type === 'progress') {
+      jobs.updateProgress(job.id, message);
+    } else if (message.type === 'task-done' || message.type === 'task-error') {
+      jobs.updateProgress(job.id, message);
+    } else if (message.type === 'done') {
+      const failed = (message.results || []).filter((result) => !result.ok);
+      const payload = { jobId: job.id, ...message };
+      jobs.emit('result', payload);
+      jobs.finish(job.id, failed.length ? 'partial' : 'done', payload);
+      worker.terminate();
+    } else if (message.type === 'cancelled') {
+      jobs.emit('cancelled', { jobId: job.id });
+      jobs.finish(job.id, 'cancelled');
+      worker.terminate();
+    } else if (message.type === 'error') {
+      jobs.emit('error', { jobId: job.id, error: message.error });
+      jobs.fail(job.id, message.error);
+      worker.terminate();
+    }
+  });
+
+  worker.on('error', (error) => {
+    jobs.fail(job.id, serialize(error));
+  });
+
+  worker.on('exit', (code) => {
+    const current = jobs.get(job.id);
+    if (current && ['running', 'cancelling'].includes(current.status) && code !== 0) {
+      jobs.fail(job.id, { code: 'E_UNKNOWN', message: `El proceso de importación terminó con código ${code}` });
+    }
+  });
+
+  return worker;
+}
+
+async function startImport({ basePath, files, conflict = 'overwrite', verify = true }) {
   const base = inspectBasePath(basePath);
   if (!fs.existsSync(base.basePath)) {
     fail('E_PATH_MISSING', `La ruta base no existe: ${base.basePath}`);
@@ -172,11 +238,24 @@ async function startImport({ basePath, files, conflict = 'ask', verify = true })
     stagingDir: path.join(tempDir, randomUUID())
   }));
 
-  const jobId = randomUUID();
   let worker = null;
-
-  const job = jobs.create('import', {
-    meta: { taskCount: tasks.length, basePath: base.basePath },
+  const job = jobs.enqueue('import', {
+    meta: {
+      taskCount: tasks.length,
+      basePath: base.basePath,
+      files: tasks.map((task) => task.file),
+      conflict,
+      verify: Boolean(verify)
+    },
+    start: (current) => {
+      worker = spawnImport(current, tasks, {
+        basePath: base.basePath,
+        manifestsRoot: base.manifests,
+        blobsRoot: base.blobs,
+        conflict,
+        verify
+      });
+    },
     cancel: () => {
       if (worker) {
         try { worker.postMessage({ type: 'cancel' }); } catch { /* ignore */ }
@@ -185,59 +264,12 @@ async function startImport({ basePath, files, conflict = 'ask', verify = true })
     }
   });
 
-  worker = new Worker(WORKER, {
-    workerData: {
-      jobId: job.id,
-      mode: 'import',
-      tasks,
-      basePath: base.basePath,
-      manifestsRoot: base.manifests,
-      blobsRoot: base.blobs,
-      conflict,
-      verify: Boolean(verify)
-    }
-  });
-
-  worker.on('message', (message) => {
-    if (!message || !message.type) return;
-    if (message.type === 'progress') {
-      jobs.emit('progress', { jobId: job.id, ...message });
-    } else if (message.type === 'task-done' || message.type === 'task-error') {
-      jobs.emit('progress', { jobId: job.id, ...message });
-    } else if (message.type === 'done') {
-      const failed = (message.results || []).filter((result) => !result.ok);
-      const payload = { jobId: job.id, ...message };
-      job.result = payload;
-      jobs.emit('result', payload);
-      jobs.finish(job.id, failed.length ? 'partial' : 'done', payload);
-      worker.terminate();
-    } else if (message.type === 'cancelled') {
-      jobs.emit('cancelled', { jobId: job.id });
-      jobs.finish(job.id, 'cancelled');
-      worker.terminate();
-    } else if (message.type === 'error') {
-      job.error = message.error;
-      jobs.emit('error', { jobId: job.id, error: message.error });
-      jobs.finish(job.id, 'error');
-      worker.terminate();
-    }
-  });
-
-  worker.on('error', (error) => {
-    job.error = serialize(error);
-    jobs.emit('error', { jobId: job.id, error: serialize(error) });
-    jobs.finish(job.id, 'error');
-  });
-
-  worker.on('exit', (code) => {
-    const current = jobs.get(job.id);
-    if (current && current.status === 'running' && code !== 0) {
-      jobs.emit('error', { jobId: job.id, error: { code: 'E_UNKNOWN', message: `El proceso de importación terminó con código ${code}` } });
-      jobs.finish(job.id, 'error');
-    }
-  });
-
-  return { jobId: job.id, taskCount: tasks.length, files: selected };
+  return {
+    jobId: job.id,
+    taskCount: tasks.length,
+    files: selected,
+    queued: job.status === 'queued'
+  };
 }
 
-module.exports = { scanTar, scanFolder, startImport, isSafeEntry, identityFromTarPath };
+module.exports = { scanTar, scanFolder, startImport, isSafeEntry, identityFromTarPath, manifestSignature };

@@ -36,8 +36,68 @@ function isDirectory(input) {
 }
 
 function isSubPath(parent, candidate) {
-  const rel = path.relative(path.resolve(parent), path.resolve(candidate));
+  let parentResolved = path.resolve(parent);
+  let candidateResolved = path.resolve(candidate);
+  if (process.platform === 'win32') {
+    parentResolved = parentResolved.toLowerCase();
+    candidateResolved = candidateResolved.toLowerCase();
+  }
+  const rel = path.relative(parentResolved, candidateResolved);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+const INVALID_SEGMENT = /[<>:"|?*\u0000-\u001f]/;
+const INVALID_TAG = /[<>:"/\\|?*\u0000-\u001f]/;
+
+function validateModelName(name) {
+  const value = String(name || '').trim();
+  if (!value) fail('E_PATH_INVALID', 'El nombre del modelo está vacío');
+  if (value.startsWith('/') || value.startsWith('\\') || /^[a-zA-Z]:/.test(value)) {
+    fail('E_PATH_INVALID', `Nombre de modelo absoluto no permitido: ${value}`);
+  }
+  if (value.includes('\\')) fail('E_PATH_INVALID', `Nombre de modelo inválido: ${value}`);
+  const segments = value.split('/');
+  for (const segment of segments) {
+    if (!segment || segment === '.' || segment === '..') {
+      fail('E_PATH_INVALID', `Segmento de modelo inválido en: ${value}`);
+    }
+    if (INVALID_SEGMENT.test(segment)) {
+      fail('E_PATH_INVALID', `Caracteres no permitidos en el nombre del modelo: ${value}`);
+    }
+  }
+  return segments.join('/');
+}
+
+function validateTag(tag) {
+  const value = String(tag || '').trim();
+  if (!value || value === '.' || value === '..') {
+    fail('E_PATH_INVALID', `Tag inválido: ${tag}`);
+  }
+  if (INVALID_TAG.test(value) || value.startsWith('.')) {
+    fail('E_PATH_INVALID', `Tag inválido: ${tag}`);
+  }
+  return value;
+}
+
+function validateModelIdentity(model) {
+  return {
+    name: validateModelName(model && model.name),
+    tag: validateTag(model && model.tag)
+  };
+}
+
+function resolveUserDataDir({ portableDir, appData, isPackaged = false } = {}) {
+  const base = appData || path.join(os.homedir(), 'AppData', 'Roaming');
+  if (isPackaged && portableDir) {
+    return path.join(portableDir, 'OllamaNeitorData');
+  }
+  return path.join(base, 'Neitor', 'OllamaNeitor');
+}
+
+function ensureInside(parent, candidate, label = 'ruta') {
+  const normalized = normalize(candidate);
+  assertInside(parent, normalized, label);
+  return normalized;
 }
 
 function assertInside(parent, candidate, label = 'ruta') {
@@ -142,6 +202,7 @@ module.exports = {
   isDirectory,
   isSubPath,
   assertInside,
+  ensureInside,
   ensureDir,
   defaultBasePath,
   inspectBasePath,
@@ -149,5 +210,9 @@ module.exports = {
   sanitizeName,
   buildFileName,
   uniquePath,
-  freeBytes
+  freeBytes,
+  validateModelName,
+  validateTag,
+  validateModelIdentity,
+  resolveUserDataDir
 };

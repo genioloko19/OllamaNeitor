@@ -3,7 +3,8 @@
 import { getState, subscribe } from '../store.js';
 import { bridge, call } from '../ipc.js';
 import {
-  saveConfig, refreshModels, refreshStatus, refreshAchievements, refreshBlobStats, formatVariantLabel
+  saveConfig, refreshModels, refreshStatus, refreshAchievements, refreshBlobStats, formatVariantLabel, loadAppInfo,
+  listJobs, cancelJob, clearJobs
 } from '../services.js';
 import {
   getThemes, getAppearance, setTheme, setGlass, setOrbs, setVariant
@@ -16,6 +17,7 @@ const TABS = [
   { id: 'appearance', label: 'Apariencia', icon: 'fa-palette' },
   { id: 'transfer', label: 'Transferencias', icon: 'fa-box-open' },
   { id: 'ollama', label: 'Ollama', icon: 'fa-server' },
+  { id: 'chat', label: 'Chat', icon: 'fa-comments' },
   { id: 'database', label: 'Base de datos', icon: 'fa-database' },
   { id: 'advanced', label: 'Avanzado', icon: 'fa-sliders' }
 ];
@@ -24,6 +26,7 @@ export function mount(container) {
   let disposed = false;
   let tab = 'appearance';
   let offLogs = () => {};
+  let offJobs = () => {};
   let logEntries = [];
 
   container.innerHTML = `
@@ -203,6 +206,11 @@ export function mount(container) {
             <label for="cfg-maxgb">Límite de tamaño por paquete (GB)</label>
             <input id="cfg-maxgb" class="input" type="number" min="1" max="500" value="${Number(transfer.maxGb) || 50}" />
           </div>
+          <div class="field">
+            <label for="cfg-concurrency">Transferencias simultáneas</label>
+            <input id="cfg-concurrency" class="input" type="number" min="1" max="4" value="${Number(transfer.concurrency) || 1}" />
+            <small>1 es lo recomendado para no saturar disco ni CPU.</small>
+          </div>
           <div class="field full">
             <label>Integridad</label>
             <label class="switch">
@@ -220,7 +228,81 @@ export function mount(container) {
           <span class="tiny soft">Se aplica a las próximas exportaciones e importaciones.</span>
         </div>
       </div>
+
+      <div class="settings-section">
+        <div class="row-wrap" style="justify-content:space-between">
+          <div>
+            <h3>Cola e historial</h3>
+            <p class="hint">Trabajos activos y últimas operaciones de esta sesión.</p>
+          </div>
+          <div class="row">
+            <button class="btn btn-ghost btn-sm" id="jobs-refresh"><i class="fa-solid fa-rotate"></i> Actualizar</button>
+            <button class="btn btn-ghost btn-sm" id="jobs-clear"><i class="fa-solid fa-broom"></i> Limpiar historial</button>
+          </div>
+        </div>
+        <div id="jobs-list" class="stack-sm" style="margin-top:10px">
+          <div class="empty" style="padding:18px"><i class="fa-solid fa-list-check"></i><strong>Sin trabajos</strong><p>Las exportaciones, importaciones y descargas aparecerán aquí.</p></div>
+        </div>
+      </div>
     `;
+  }
+
+  function jobDescription(job) {
+    if (job.type === 'export') {
+      const count = job.meta && Array.isArray(job.meta.models) ? job.meta.models.length : 0;
+      return `${count} modelo(s) · ${job.meta && job.meta.destDir ? job.meta.destDir : ''}`;
+    }
+    if (job.type === 'import') {
+      const count = job.meta && job.meta.taskCount ? job.meta.taskCount : 0;
+      return `${count} paquete(s) · ${job.meta && job.meta.basePath ? job.meta.basePath : ''}`;
+    }
+    return job.meta && job.meta.model ? job.meta.model : '';
+  }
+
+  function jobIcon(job) {
+    if (job.type === 'export') return 'fa-box-open';
+    if (job.type === 'import') return 'fa-file-import';
+    return 'fa-cloud-arrow-down';
+  }
+
+  function renderJobs(list) {
+    const box = $('#jobs-list');
+    if (!box) return;
+    if (!list || !list.length) {
+      box.innerHTML = `<div class="empty" style="padding:18px"><i class="fa-solid fa-list-check"></i><strong>Sin trabajos</strong><p>Las exportaciones, importaciones y descargas aparecerán aquí.</p></div>`;
+      return;
+    }
+    box.innerHTML = list.slice(0, 20).map((job) => {
+      const active = ['queued', 'running', 'cancelling'].includes(job.status);
+      const percent = job.progress && Number(job.progress.percent) ? Math.min(100, Number(job.progress.percent)) : (job.status === 'done' ? 100 : 0);
+      const statusClass = job.status === 'done' ? 'pill-success' : job.status === 'error' ? 'pill-danger' : job.status === 'cancelled' ? 'pill-warning' : 'pill-accent';
+      return `
+        <div class="trophy-card" style="align-items:flex-start">
+          <span class="trophy-icon"><i class="fa-solid ${jobIcon(job)}"></i></span>
+          <div class="trophy-meta grow">
+            <div class="row-wrap" style="gap:6px">
+              <strong>${escapeHtml(job.type === 'export' ? 'Exportación' : job.type === 'import' ? 'Importación' : 'Descarga')}</strong>
+              <span class="pill ${statusClass}">${escapeHtml(job.status)}</span>
+              ${active ? `<button class="btn btn-ghost btn-sm" data-job-cancel="${escapeHtml(job.id)}" style="margin-left:auto"><i class="fa-solid fa-stop"></i> Cancelar</button>` : ''}
+            </div>
+            <p class="truncate">${escapeHtml(jobDescription(job))}</p>
+            <div class="progress" style="margin-top:6px"><span data-job-bar="${escapeHtml(job.id)}" style="width:${percent}%"></span></div>
+            <div class="progress-meta">
+              <span>${fmtDate(job.startedAt || job.createdAt)}</span>
+              <span data-job-percent="${escapeHtml(job.id)}">${percent} %</span>
+            </div>
+            ${job.error ? `<p class="tiny" style="color:var(--danger)">${escapeHtml(job.error.message)}</p>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function loadJobList() {
+    try {
+      const list = await listJobs();
+      renderJobs(list);
+    } catch { /* ignore */ }
   }
 
   function bindTransfer() {
@@ -240,6 +322,7 @@ export function mount(container) {
             destDir: $('#cfg-dest').value.trim(),
             nameTemplate: $('#cfg-template').value.trim() || '{modelo}_{tag}',
             maxGb: Number($('#cfg-maxgb').value) || 50,
+            concurrency: Number($('#cfg-concurrency').value) || 1,
             verify: $('#cfg-verify').checked
           }
         });
@@ -248,6 +331,39 @@ export function mount(container) {
         await errorDialog('No se pudo guardar', error);
       }
     });
+
+    $('#jobs-refresh').addEventListener('click', loadJobList);
+    $('#jobs-clear').addEventListener('click', async () => {
+      try {
+        await clearJobs();
+        await loadJobList();
+        toast.success('Historial de trabajos limpiado');
+      } catch (error) {
+        toast.error('No se pudo limpiar el historial', error.message);
+      }
+    });
+    $('#jobs-list').addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-job-cancel]');
+      if (!button) return;
+      try {
+        await cancelJob(button.dataset.jobCancel);
+        toast.info('Cancelación solicitada');
+      } catch (error) {
+        toast.error('No se pudo cancelar', error.message);
+      }
+    });
+
+    loadJobList();
+    const offChanged = bridge ? bridge.jobs.onChanged((list) => renderJobs(list)) : () => {};
+    const offProgress = bridge ? bridge.jobs.onProgress((progress) => {
+      const bar = container.querySelector(`[data-job-bar="${progress.jobId}"]`);
+      const label = container.querySelector(`[data-job-percent="${progress.jobId}"]`);
+      if (bar && Number.isFinite(Number(progress.percent))) {
+        bar.style.width = `${Math.min(100, Number(progress.percent))}%`;
+        if (label) label.textContent = `${Math.min(100, Number(progress.percent))} %`;
+      }
+    }) : () => {};
+    offJobs = () => { offChanged(); offProgress(); };
   }
 
   /* ================= Ollama ================= */
@@ -352,9 +468,16 @@ export function mount(container) {
 
     $('#cfg-test').addEventListener('click', async () => {
       const label = $('#cfg-test-result');
+      const host = $('#cfg-host').value.trim();
+      const timeoutMs = Number($('#cfg-timeout').value) || 4000;
+      if (!/^https?:\/\//i.test(host)) {
+        label.textContent = 'Host inválido: debe empezar por http:// o https://';
+        toast.warning('Host inválido', 'Corrige el campo antes de probar.');
+        return;
+      }
       label.innerHTML = '<span class="spinner"></span> probando…';
       try {
-        const result = await call(bridge.ollama.status);
+        const result = await call(bridge.ollama.status, { host, timeoutMs });
         label.textContent = result.online
           ? `En línea · v${result.version} · ${result.modelCount} modelo(s)`
           : `Sin conexión · ${result.error || 'servicio no disponible'}`;
@@ -388,11 +511,100 @@ export function mount(container) {
           }
         });
         toast.success('Conexión guardada', 'El inventario se actualizará ahora.');
+        await loadAppInfo();
         await Promise.all([refreshModels({ silent: true }), refreshStatus()]);
         window.dispatchEvent(new CustomEvent('neitor:refresh-data'));
         renderPanel();
       } catch (error) {
         await errorDialog('No se pudo guardar', error);
+      }
+    });
+  }
+
+  /* ================= Chat ================= */
+
+  function chatHtml() {
+    const config = getState().config || {};
+    const chat = config.chat || {};
+    return `
+      <div class="settings-section">
+        <h2>Chat y generación</h2>
+        <p class="hint">Parámetros que se envían a <span class="mono">/api/chat</span> en cada conversación.</p>
+      </div>
+      <div class="settings-section">
+        <div class="form-grid">
+          <div class="field">
+            <label for="cfg-temperature">Temperatura</label>
+            <input id="cfg-temperature" class="input" type="number" min="0" max="2" step="0.1" value="${Number(chat.temperature) || 0.7}" />
+            <small>0 = determinista; 1+ = más creativo.</small>
+          </div>
+          <div class="field">
+            <label for="cfg-topp">Top P</label>
+            <input id="cfg-topp" class="input" type="number" min="0" max="1" step="0.05" value="${Number(chat.top_p) || 0.9}" />
+          </div>
+          <div class="field">
+            <label for="cfg-numctx">Contexto (num_ctx)</label>
+            <input id="cfg-numctx" class="input" type="number" min="512" max="131072" step="512" value="${Number(chat.num_ctx) || 4096}" />
+          </div>
+          <div class="field">
+            <label for="cfg-numpredict">Máximo de tokens (num_predict)</label>
+            <input id="cfg-numpredict" class="input" type="number" min="-1" max="32768" step="1" value="${Number(chat.numPredict) || -1}" />
+            <small>-1 = sin límite explícito.</small>
+          </div>
+          <div class="field">
+            <label for="cfg-maxhistory">Mensajes de historial enviados</label>
+            <input id="cfg-maxhistory" class="input" type="number" min="2" max="200" value="${Number(chat.maxHistory) || 40}" />
+          </div>
+          <div class="field">
+            <label for="cfg-keepalive">keep_alive</label>
+            <input id="cfg-keepalive" class="input" value="${escapeHtml(chat.keepAlive || '5m')}" placeholder="5m, 1h, 0" />
+            <small>Cuánto mantiene Ollama el modelo en memoria tras responder.</small>
+          </div>
+          <div class="field full">
+            <label for="cfg-systemprompt">System prompt global</label>
+            <textarea id="cfg-systemprompt" class="textarea" rows="3" placeholder="Instrucciones que se añaden al inicio de cada conversación…">${escapeHtml(chat.systemPrompt || '')}</textarea>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="row-wrap">
+          <button class="btn btn-primary btn-sm" id="cfg-save-chat"><i class="fa-solid fa-floppy-disk"></i> Guardar chat</button>
+          <span class="tiny soft">Se aplica al siguiente mensaje.</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function bindChat() {
+    $('#cfg-save-chat').addEventListener('click', async () => {
+      const temperature = Number($('#cfg-temperature').value);
+      const topP = Number($('#cfg-topp').value);
+      const numCtx = Number($('#cfg-numctx').value);
+      const numPredict = Number($('#cfg-numpredict').value);
+      const maxHistory = Number($('#cfg-maxhistory').value);
+      if (temperature < 0 || temperature > 2) {
+        toast.warning('Temperatura inválida', 'Debe estar entre 0 y 2.');
+        return;
+      }
+      if (topP < 0 || topP > 1) {
+        toast.warning('Top P inválido', 'Debe estar entre 0 y 1.');
+        return;
+      }
+      try {
+        await saveConfig({
+          chat: {
+            temperature,
+            top_p: topP,
+            num_ctx: Math.max(512, numCtx || 4096),
+            numPredict: Math.max(-1, numPredict || -1),
+            maxHistory: Math.max(2, maxHistory || 40),
+            keepAlive: $('#cfg-keepalive').value.trim() || '5m',
+            systemPrompt: $('#cfg-systemprompt').value
+          }
+        });
+        toast.success('Parámetros de chat guardados');
+      } catch (error) {
+        await errorDialog('No se pudo guardar el chat', error);
       }
     });
   }
@@ -409,6 +621,7 @@ export function mount(container) {
       <div class="settings-section">
         <div class="row-wrap">
           <button class="btn btn-primary btn-sm" id="db-refresh"><i class="fa-solid fa-rotate"></i> Analizar</button>
+          <button class="btn btn-danger btn-sm" id="db-clean" disabled><i class="fa-solid fa-broom"></i> Borrar huérfanos</button>
           <button class="btn btn-ghost btn-sm" id="db-open"><i class="fa-solid fa-folder-tree"></i> Abrir carpeta de modelos</button>
         </div>
         <div id="db-stats" class="stack-sm" style="margin-top:12px">
@@ -431,6 +644,8 @@ export function mount(container) {
     `;
   }
 
+  let lastBlobStats = null;
+
   function bindDatabase() {
     $('#db-open').addEventListener('click', async () => {
       const target = getState().config?.ollama?.basePath || getState().base?.basePath;
@@ -444,6 +659,7 @@ export function mount(container) {
       button.innerHTML = '<span class="spinner"></span> Analizando…';
       try {
         const stats = await refreshBlobStats();
+        lastBlobStats = stats;
         renderDatabaseStats(stats);
       } catch (error) {
         await errorDialog('No se pudo analizar la base de datos', error);
@@ -452,10 +668,33 @@ export function mount(container) {
         button.innerHTML = '<i class="fa-solid fa-rotate"></i> Analizar';
       }
     });
+
+    $('#db-clean').addEventListener('click', async () => {
+      if (!lastBlobStats || !lastBlobStats.orphanCount) return;
+      const ok = await confirm({
+        title: 'Borrar blobs huérfanos',
+        html: `Se eliminarán <strong>${lastBlobStats.orphanCount}</strong> blob(s) no referenciados por ningún manifiesto.<br><br>Espacio recuperable: <strong>${escapeHtml(lastBlobStats.orphanLabel)}</strong>.<br><br>Esta acción no se puede deshacer.`,
+        confirmText: 'Borrar huérfanos',
+        icon: 'warning',
+        danger: true
+      });
+      if (!ok) return;
+      try {
+        const result = await call(bridge.models.deleteOrphans, {});
+        toast.success('Huérfanos eliminados', `${result.deleted} blob(s) · ${fmtBytes(result.freedBytes)} liberados`);
+        const stats = await refreshBlobStats();
+        lastBlobStats = stats;
+        renderDatabaseStats(stats);
+      } catch (error) {
+        await errorDialog('No se pudieron borrar los huérfanos', error);
+      }
+    });
   }
 
   function renderDatabaseStats(stats) {
     const box = $('#db-stats');
+    const cleanButton = $('#db-clean');
+    if (cleanButton) cleanButton.disabled = !stats || !stats.orphanCount;
     if (!stats || !stats.ok) {
       box.innerHTML = `<div class="alert warning"><i class="fa-solid fa-triangle-exclamation"></i><span>No se encontró la carpeta <span class="mono">blobs</span> en la ruta configurada.</span></div>`;
       return;
@@ -464,11 +703,16 @@ export function mount(container) {
       <div class="grid-3">
         <div class="detail-item"><span>Tamaño total</span><strong>${escapeHtml(stats.totalLabel || fmtBytes(stats.totalBytes))}</strong></div>
         <div class="detail-item"><span>Blobs</span><strong>${stats.blobCount}</strong></div>
-        <div class="detail-item"><span>Referenciados</span><strong>${stats.referenced}</strong></div>
+        <div class="detail-item"><span>Referenciados</span><strong>${stats.referencedCount}</strong></div>
+        <div class="detail-item"><span>Faltantes</span><strong>${stats.missingCount}</strong></div>
         <div class="detail-item"><span>Huérfanos</span><strong>${stats.orphanCount}</strong></div>
         <div class="detail-item"><span>Espacio recuperable</span><strong>${escapeHtml(stats.orphanLabel || fmtBytes(stats.orphanBytes))}</strong></div>
         <div class="detail-item"><span>Manifiestos</span><strong>${stats.manifests}</strong></div>
+        <div class="detail-item"><span>Errores de manifiesto</span><strong>${stats.manifestErrors}</strong></div>
+        <div class="detail-item"><span>Bytes faltantes</span><strong>${escapeHtml(stats.missingLabel || '0 B')}</strong></div>
       </div>
+      ${stats.missingCount ? `<div class="alert warning"><i class="fa-solid fa-triangle-exclamation"></i><span>${stats.missingCount} blob(s) referenciados no existen en disco. Verifica esos modelos o vuelve a descargarlos.</span></div>` : ''}
+      ${stats.manifestErrors ? `<div class="alert danger"><i class="fa-solid fa-circle-xmark"></i><span>${stats.manifestErrors} manifiesto(s) no se pudieron leer.</span></div>` : ''}
     `;
     const orphans = Array.isArray(stats.orphans) ? stats.orphans : [];
     const body = orphans.length
@@ -505,6 +749,19 @@ export function mount(container) {
           <button class="btn btn-ghost btn-sm" id="adv-reset-config"><i class="fa-solid fa-rotate-left"></i> Restaurar configuración</button>
           <button class="btn btn-ghost btn-sm" id="adv-show-config"><i class="fa-solid fa-file-code"></i> Ver config.json</button>
           <button class="btn btn-ghost btn-sm" id="adv-open-data"><i class="fa-solid fa-folder-tree"></i> Abrir datos</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3 style="margin-bottom:10px">Diagnóstico</h3>
+        <div class="row-wrap">
+          <div class="field" style="max-width:240px">
+            <label for="adv-loglevel">Nivel de registro</label>
+            <select id="adv-loglevel" class="select">
+              ${['debug', 'info', 'warn', 'error'].map((level) => `<option value="${level}" ${(info.config?.ui?.logLevel || 'info') === level ? 'selected' : ''}>${level.toUpperCase()}</option>`).join('')}
+            </select>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="adv-save-log"><i class="fa-solid fa-floppy-disk"></i> Guardar nivel</button>
         </div>
       </div>
 
@@ -608,6 +865,15 @@ export function mount(container) {
       try { await call(bridge.shell.openPath, getState().paths?.root); }
       catch (error) { toast.error('No se pudo abrir la carpeta', error.message); }
     });
+
+    $('#adv-save-log').addEventListener('click', async () => {
+      try {
+        await saveConfig({ ui: { logLevel: $('#adv-loglevel').value } });
+        toast.success('Nivel de registro guardado');
+      } catch (error) {
+        await errorDialog('No se pudo guardar el nivel de registro', error);
+      }
+    });
   }
 
   /* ================= Render y navegación ================= */
@@ -615,6 +881,8 @@ export function mount(container) {
   function renderPanel() {
     offLogs();
     offLogs = () => {};
+    offJobs();
+    offJobs = () => {};
     container.querySelectorAll('[data-tab]').forEach((button) => {
       button.classList.toggle('active', button.dataset.tab === tab);
     });
@@ -628,6 +896,9 @@ export function mount(container) {
     } else if (tab === 'ollama') {
       panel.innerHTML = ollamaHtml();
       bindOllama();
+    } else if (tab === 'chat') {
+      panel.innerHTML = chatHtml();
+      bindChat();
     } else if (tab === 'database') {
       panel.innerHTML = databaseHtml();
       bindDatabase();
@@ -659,6 +930,7 @@ export function mount(container) {
   return () => {
     disposed = true;
     offLogs();
+    offJobs();
     window.removeEventListener('neitor:theme', onTheme);
     unsubscribe();
   };

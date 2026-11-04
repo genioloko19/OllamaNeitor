@@ -21,19 +21,21 @@ function makeBase() {
   const blobs = path.join(base, 'blobs');
   fs.mkdirSync(manifests, { recursive: true });
   fs.mkdirSync(blobs, { recursive: true });
-  fs.writeFileSync(path.join(blobs, 'sha256-config'), Buffer.alloc(20, 1));
-  fs.writeFileSync(path.join(blobs, 'sha256-layer'), Buffer.alloc(200, 2));
+  const configDigest = `sha256:${'c'.repeat(64)}`;
+  const layerDigest = `sha256:${'d'.repeat(64)}`;
+  fs.writeFileSync(path.join(blobs, configDigest.replace(':', '-')), Buffer.alloc(20, 1));
+  fs.writeFileSync(path.join(blobs, layerDigest.replace(':', '-')), Buffer.alloc(200, 2));
   fs.writeFileSync(path.join(manifests, 'latest'), JSON.stringify({
     schemaVersion: 2,
-    config: { digest: 'sha256:config', size: 20 },
-    layers: [{ digest: 'sha256:layer', size: 200 }]
+    config: { digest: configDigest, size: 20 },
+    layers: [{ digest: layerDigest, size: 200 }]
   }));
-  return base;
+  return { base, configDigest, layerDigest };
 }
 
 describe('exporter', () => {
   it('planifica archivos, tamaños y nombre de salida', () => {
-    const basePath = makeBase();
+    const { base: basePath } = makeBase();
     const destDir = tempDir();
     const plan = exporter.buildTasks({
       basePath,
@@ -49,9 +51,39 @@ describe('exporter', () => {
     expect(plan.tasks[0].outputPart.endsWith('.part')).toBe(true);
   });
 
+  it('reserva nombres distintos para modelos con la misma plantilla', () => {
+    const { base: basePath } = makeBase();
+    const destDir = tempDir();
+    const plan = exporter.buildTasks({
+      basePath,
+      destDir,
+      models: [
+        { name: 'demo', tag: 'latest' },
+        { name: 'demo', tag: 'latest' }
+      ],
+      template: '{modelo}_{tag}',
+      verify: false
+    });
+    expect(plan.tasks).toHaveLength(2);
+    expect(plan.tasks[0].outputFinal).not.toBe(plan.tasks[1].outputFinal);
+    expect(plan.tasks[1].outputFinal.endsWith('-2.tar')).toBe(true);
+  });
+
+  it('rechaza modelos solo API sin manifiesto local', () => {
+    const { base: basePath } = makeBase();
+    const destDir = tempDir();
+    expect(() => exporter.buildTasks({
+      basePath,
+      destDir,
+      models: [{ name: 'solo-api', tag: 'latest', manifestPath: null }],
+      template: '{modelo}_{tag}',
+      verify: true
+    })).toThrow(/no son exportables/);
+  });
+
   it('falla si falta un blob', () => {
-    const basePath = makeBase();
-    fs.rmSync(path.join(basePath, 'blobs', 'sha256-layer'));
+    const { base: basePath, layerDigest } = makeBase();
+    fs.rmSync(path.join(basePath, 'blobs', layerDigest.replace(':', '-')));
     const destDir = tempDir();
     expect(() => exporter.buildTasks({
       basePath,
@@ -59,7 +91,7 @@ describe('exporter', () => {
       models: [{ name: 'demo', tag: 'latest' }],
       template: '{modelo}_{tag}',
       verify: true
-    })).toThrow(/Faltan 1 archivo/);
+    })).toThrow(/no son exportables/);
   });
 
   it('falla con una ruta base inválida', () => {

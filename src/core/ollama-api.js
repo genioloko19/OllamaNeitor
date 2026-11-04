@@ -141,10 +141,10 @@ async function pull({ host, model, onProgress, signal }) {
   return last;
 }
 
-async function chat({ host, model, messages, options, onChunk, signal, timeoutMs = 300000 }) {
+async function chat({ host, model, messages, options, keepAlive, onChunk, signal, timeoutMs = 300000 }) {
   const response = await request(host, '/api/chat', {
     method: 'POST',
-    body: { model, messages, stream: true, options: options || {} },
+    body: { model, messages, stream: true, options: options || {}, keep_alive: keepAlive || undefined },
     timeoutMs,
     signal
   });

@@ -19,15 +19,15 @@ function ensureMarked() {
 export function renderMarkdown(text) {
   const source = String(text || '');
   const marked = ensureMarked();
-  const html = marked ? marked.parse(source) : escape(source).replace(/\n/g, '<br>');
-  if (window.DOMPurify) {
-    return window.DOMPurify.sanitize(html, {
-      USE_PROFILES: { html: true },
-      FORBID_TAGS: ['style', 'iframe', 'form', 'input', 'button'],
-      FORBID_ATTR: ['style', 'onerror', 'onclick']
-    });
+  if (!marked || !window.DOMPurify) {
+    return escape(source).replace(/\n/g, '<br>');
   }
-  return html;
+  const html = marked.parse(source);
+  return window.DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['style', 'iframe', 'form', 'input', 'button'],
+    FORBID_ATTR: ['style', 'onerror', 'onclick']
+  });
 }
 
 function escape(value) {
